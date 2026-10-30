@@ -1,0 +1,127 @@
+#pragma kernel EvaluatePose
+#pragma kernel Skin
+
+#include "Packages/com.sa.unity/Runtime/Shaders/Pose.hlsl"
+
+struct GpuBone { int Parent; float3 RestPosition; float4 RestRotation; float3 RestScale; };
+struct GpuInstance { uint BoneBase; uint BoneCount; uint PoseBase; uint MotionBase; uint MotionCount; };
+struct GpuMotion { uint SampleBase; uint FrameCount; uint Layer; uint Mode; uint MaskBase; float Frame; float Weight; };
+struct GpuSkin { uint SkinBoneBase; uint SkinBoneCount; Affine MeshFromRig; };
+struct GpuSkinBone { uint Bone; Affine Bindpose; };
+struct GpuSkinJob { uint Skin; uint PoseBase; uint OutputBase; };
+
+StructuredBuffer<GpuBone> _Bones;
+StructuredBuffer<BonePose> _Samples;
+StructuredBuffer<float> _Masks;
+StructuredBuffer<GpuInstance> _Instances;
+StructuredBuffer<GpuMotion> _Motions;
+StructuredBuffer<GpuSkin> _Skins;
+StructuredBuffer<GpuSkinBone> _SkinBones;
+StructuredBuffer<GpuSkinJob> _SkinJobs;
+RWStructuredBuffer<Affine> _Poses;
+RWStructuredBuffer<Affine> _SkinMatrices;
+uint _InstanceCount;
+uint _SkinJobCount;
+
+BonePose SampleMotion(GpuMotion motion, uint boneCount, uint bone)
+{
+    uint last = max(motion.FrameCount, 1u) - 1u;
+    uint first = min((uint)floor(max(motion.Frame, 0.0)), last);
+    uint next = min(first + 1u, last);
+    return LerpPose(_Samples[motion.SampleBase + first * boneCount + bone], _Samples[motion.SampleBase + next * boneCount + bone], saturate(motion.Frame - first));
+}
+
+bool NextLayer(GpuInstance instance, int after, out int layer)
+{
+    layer = 2147483647;
+    for (uint i = 0; i < instance.MotionCount; i++)
+    {
+        int candidate = (int)_Motions[instance.MotionBase + i].Layer;
+        if (candidate > after && candidate < layer)
+            layer = candidate;
+    }
+    return layer != 2147483647;
+}
+
+BonePose EvaluateBone(GpuInstance instance, uint bone)
+{
+    GpuBone rest = _Bones[instance.BoneBase + bone];
+    BonePose pose;
+    pose.Position = rest.RestPosition;
+    pose.Rotation = rest.RestRotation;
+    pose.Scale = rest.RestScale;
+    int layer = -1;
+    int found;
+    while (NextLayer(instance, layer, found))
+    {
+        layer = found;
+        float3 position = 0;
+        float4 rotation = 0;
+        float3 scale = 0;
+        float total = 0;
+        uint i;
+        for (i = 0; i < instance.MotionCount; i++)
+        {
+            GpuMotion motion = _Motions[instance.MotionBase + i];
+            float weight = motion.Weight * _Masks[motion.MaskBase + bone];
+            if ((int)motion.Layer != layer || motion.Mode != 0u || weight <= 0)
+                continue;
+            BonePose sample = SampleMotion(motion, instance.BoneCount, bone);
+            float4 anchor = total > 0 ? rotation : sample.Rotation;
+            position += weight * sample.Position;
+            rotation += weight * AlignRotation(sample.Rotation, anchor);
+            scale += weight * sample.Scale;
+            total += weight;
+        }
+        if (total > 0)
+        {
+            BonePose mean;
+            mean.Position = position / total;
+            mean.Rotation = NormalizeRotation(rotation);
+            mean.Scale = scale / total;
+            pose = LerpPose(pose, mean, min(1.0, total));
+        }
+        for (i = 0; i < instance.MotionCount; i++)
+        {
+            GpuMotion motion = _Motions[instance.MotionBase + i];
+            float weight = motion.Weight * _Masks[motion.MaskBase + bone];
+            if ((int)motion.Layer != layer || motion.Mode != 1u || weight <= 0)
+                continue;
+            BonePose reference = _Samples[motion.SampleBase + motion.FrameCount * instance.BoneCount + bone];
+            pose = AccumulatePose(pose, DeltaPose(SampleMotion(motion, instance.BoneCount, bone), reference), weight);
+        }
+    }
+    return pose;
+}
+
+[numthreads(64, 1, 1)]
+void EvaluatePose(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _InstanceCount)
+        return;
+    GpuInstance instance = _Instances[id.x];
+    for (uint bone = 0; bone < instance.BoneCount; bone++)
+    {
+        Affine local = AffineFromPose(EvaluateBone(instance, bone));
+        int parent = _Bones[instance.BoneBase + bone].Parent;
+        if (parent >= 0)
+            local = MulAffine(_Poses[instance.PoseBase + (uint)parent], local);
+        _Poses[instance.PoseBase + bone] = local;
+    }
+}
+
+[numthreads(64, 1, 1)]
+void Skin(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _SkinJobCount)
+        return;
+    GpuSkinJob job = _SkinJobs[id.x];
+    if (job.Skin == 0xFFFFFFFFu)
+        return;
+    GpuSkin skin = _Skins[job.Skin];
+    for (uint k = 0; k < skin.SkinBoneCount; k++)
+    {
+        GpuSkinBone skinBone = _SkinBones[skin.SkinBoneBase + k];
+        _SkinMatrices[job.OutputBase + k] = MulAffine(MulAffine(skin.MeshFromRig, _Poses[job.PoseBase + skinBone.Bone]), skinBone.Bindpose);
+    }
+}

@@ -1,0 +1,33 @@
+{
+  "name": "com.sa.unity",
+  "version": "0.3.0",
+  "displayName": "SA - Simple Animation",
+  "description": "Skeletal animation for unmanaged ECS: clip playback and blending with a CPU engine for bone entities and a GPU compute engine. No state machines, no parameters.",
+  "unity": "7000.0",
+  "keywords": [
+    "animation",
+    "ecs",
+    "dots",
+    "skinning",
+    "burst"
+  ],
+  "license": "MIT",
+  "author": {
+    "name": "SA"
+  },
+  "dependencies": {
+    "com.unity.entities": "6.7.0",
+    "com.unity.entities.graphics": "6.7.0"
+  },
+  "samples": [
+    {
+      "displayName": "Showcase and Crowd",
+      "description": "Scripted blends, masked additive layers, CPU head look and a spawnable crowd. Needs URP.",
+      "path": "Samples~/Showcase"
+    }
+  ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/IAFahim/com.sa.unity.git"
+  }
+}
