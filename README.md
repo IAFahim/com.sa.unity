@@ -8,6 +8,8 @@ No state machines, no parameters, no graphs.
 Setup
 -----
 
+0. Add the portable motion bridge to the project's `Packages/manifest.json`, next to this package: `"com.sa.motion.unity": "<path or git url of sa-motion>/packages/com.sa.motion.unity"`. `SA.Runtime` references it.
+
 1. Add `RigAuthoring` to the character root. List the clips and masks. Pick `Engine.Gpu` (fast, no bone entities) or `Engine.Cpu` (bone entities you can drive).
 2. Select the character and run `Tools/SA/Convert Skinned Mesh Renderers`. Each `SkinnedMeshRenderer` becomes a `MeshRenderer` plus `SkinAuthoring`.
 3. Give the renderer a skinning material. Import the `Showcase` sample and use `SA Skinned Lit.shader`, or add a Vector2 property `_SaSkin` (Override Property Declaration: Hybrid Per Instance) to your ShaderGraph and feed `Skin_float` from `Runtime/Shaders/Skinning.hlsl` through a Custom Function node.
