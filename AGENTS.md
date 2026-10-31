@@ -1,6 +1,8 @@
 Gotchas
 =======
 
+How to drive the Editor from a shell, and the Unity Physics findings, are in `/home/i/GitHub/sa-motion/AGENTS.md` (sections "Controlling Unity from a shell" and "Findings so far").
+
 1. A MonoBehaviour must live in a file with its own name. Otherwise it saves as a missing script and silently vanishes from prefabs.
 2. Bakers write only their own entity. Use `[TemporaryBakingType]` buffers and a baking system for other entities.
 3. Blobs are accessed by `ref`.
