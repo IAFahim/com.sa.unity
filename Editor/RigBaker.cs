@@ -163,6 +163,11 @@ namespace SA.Editor
                 var bones = AddBuffer<BoneEntity>(entity);
                 foreach (var bone in boneEntities)
                     bones.Add(new BoneEntity { Value = bone });
+                if (authoring.Inertialize)
+                {
+                    AddComponent<TransitionIntent>(entity);
+                    AddBuffer<BoneTransition>(entity).Resize(boneEntities.Length, NativeArrayOptions.ClearMemory);
+                }
             }
             var baked = AddBuffer<BakedBone>(entity);
             foreach (var bone in boneEntities)

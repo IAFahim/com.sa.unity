@@ -12,7 +12,8 @@
         "Unity.Transforms",
         "Unity.Entities.Graphics",
         "UnityEngine.TestRunner",
-        "UnityEditor.TestRunner"
+        "UnityEditor.TestRunner",
+        "SA.Motion.Unity"
     ],
     "includePlatforms": [
         "Editor"
@@ -21,7 +22,8 @@
     "allowUnsafeCode": true,
     "overrideReferences": true,
     "precompiledReferences": [
-        "nunit.framework.dll"
+        "nunit.framework.dll",
+        "SA.Motion.dll"
     ],
     "autoReferenced": false,
     "defineConstraints": [

@@ -15,5 +15,6 @@ namespace SA
         public Engine Engine = Engine.Gpu;
         public AnimationClip Autoplay;
         public float TimeScale = 1f;
+        public bool Inertialize;
     }
 }

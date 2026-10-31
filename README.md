@@ -8,6 +8,8 @@ No state machines, no parameters, no graphs.
 Setup
 -----
 
+0. Add the portable motion bridge to the project's `Packages/manifest.json`, next to this package: `"com.sa.motion.unity": "<path or git url of sa-motion>/packages/com.sa.motion.unity"`. `SA.Runtime` references it.
+
 1. Add `RigAuthoring` to the character root. List the clips and masks. Pick `Engine.Gpu` (fast, no bone entities) or `Engine.Cpu` (bone entities you can drive).
 2. Select the character and run `Tools/SA/Convert Skinned Mesh Renderers`. Each `SkinnedMeshRenderer` becomes a `MeshRenderer` plus `SkinAuthoring`.
 3. Give the renderer a skinning material. Import the `Showcase` sample and use `SA Skinned Lit.shader`, or add a Vector2 property `_SaSkin` (Override Property Declaration: Hybrid Per Instance) to your ShaderGraph and feed `Skin_float` from `Runtime/Shaders/Skinning.hlsl` through a Custom Function node.
@@ -69,6 +71,17 @@ Engines
 | take over a bone | no | disable `PoseDriven` or write after `CpuPoseSystem` in `PoseConstraintSystemGroup` |
 
 Both engines skin through the same vertex function.
+
+Transitions without transition clips
+------------------------------------
+
+Tick `Inertialize` on a CPU `RigAuthoring`. The rig then carries a `TransitionIntent` and one `BoneTransition` per bone (about 208 bytes each).
+
+```csharp
+TransitionPlayback.Play(ref states, ref intent, key: 7, Names.Clip(assets, "Run"), seconds: 0.3f, PlayOptions.Default);
+```
+
+A new key cuts to the destination and the pose then decays from where it was. The same key again only updates speed and weights, so calling it every frame is correct. Reusing a key for a different clip set returns `RequestDecision.Misuse` and changes nothing. `TransitionPlayback.Blend` takes the same arguments plus weights, so locomotion blends keep working inside one request. GPU rigs do not support this yet.
 
 Limits
 ------
