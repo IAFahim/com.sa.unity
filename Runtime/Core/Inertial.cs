@@ -31,6 +31,9 @@ namespace SA
             return ToBone(output);
         }
 
+        public static void Observe(ref BoneTransition bone, in BonePose output, float deltaTime) =>
+            bone.History.Capture(ToMotion(output), deltaTime);
+
         public static uint Membership(ReadOnlySpan<ClipId> clips, in PlayOptions options)
         {
             var hash = 2166136261u;
