@@ -44,7 +44,7 @@ namespace SA.Editor
                         required.Add(bone);
                     else
                         errors.Add("ExtraBones contains a missing transform.");
-            var animator = root.GetComponent<Animator>();
+            var animator = root.GetComponentInChildren<Animator>(true);
             if (animator != null && animator.avatar != null && animator.avatar.isHuman)
                 foreach (var human in HumanBones(root, errors))
                     required.Add(human);
@@ -66,14 +66,11 @@ namespace SA.Editor
                 for (var t = bone; t != root; t = t.parent)
                     closure.Add(t);
             }
-            foreach (var clip in clips)
-                foreach (var binding in AnimationUtility.GetCurveBindings(clip))
-                    if (binding.type == typeof(Transform) && binding.path.Length > 0)
-                    {
-                        var animated = root.Find(binding.path);
-                        if (animated != null && !closure.Contains(animated))
-                            errors.Add($"clip '{clip.name}' animates '{binding.path}' outside the skin skeleton. Add that transform to RigAuthoring.ExtraBones.");
-                    }
+            var branches = new List<Transform>(closure);
+            foreach (var bone in branches)
+                if (bone.parent == root)
+                    foreach (var descendant in bone.GetComponentsInChildren<Transform>(true))
+                        closure.Add(descendant);
             var ordered = new List<Transform>(closure.Count);
             Collect(root, closure, ordered);
             return ordered;
@@ -95,7 +92,7 @@ namespace SA.Editor
 
         static IEnumerable<Transform> HumanBones(Transform root, List<string> errors)
         {
-            var animator = root.GetComponent<Animator>();
+            var animator = root.GetComponentInChildren<Animator>(true);
             if (animator == null || animator.avatar == null || !animator.avatar.isHuman)
             {
                 errors.Add("a humanoid clip needs an Animator with a humanoid Avatar on the rig root.");
@@ -135,12 +132,15 @@ namespace SA.Editor
             return new Hash128(hasher.DigestHash128());
         }
 
-        public static unsafe Hash128 ClipKey(Transform root, AnimationClip clip, float sampleRate, Hash128 rigId)
+        public static unsafe Hash128 ClipKey(Transform root, AnimationClip clip, float sampleRate, Hash128 rigId, bool inPlace = false, Transform motionBone = null)
         {
             var hasher = new xxHash3.StreamingState(false);
-            Feed(ref hasher, "SA.Clip.3");
+            Feed(ref hasher, "SA.Clip.4");
             hasher.Update(&rigId, sizeof(Hash128));
             hasher.Update(&sampleRate, sizeof(float));
+            hasher.Update(&inPlace, sizeof(bool));
+            if (inPlace)
+                Feed(ref hasher, motionBone != null ? AnimationUtility.CalculateTransformPath(motionBone, root) : "auto");
             FeedClip(ref hasher, clip);
             var settings = AnimationUtility.GetAnimationClipSettings(clip);
             var referenceTime = settings.additiveReferencePoseTime;
@@ -148,7 +148,7 @@ namespace SA.Editor
             hasher.Update(&hasReference, sizeof(bool));
             hasher.Update(&referenceTime, sizeof(float));
             FeedClip(ref hasher, settings.additiveReferencePoseClip);
-            var animator = root.GetComponent<Animator>();
+            var animator = root.GetComponentInChildren<Animator>(true);
             Feed(ref hasher, AssetKey(animator != null ? animator.avatar : null));
             if (clip.isHumanMotion || (settings.additiveReferencePoseClip != null && settings.additiveReferencePoseClip.isHumanMotion))
             {
@@ -195,7 +195,7 @@ namespace SA.Editor
             var path = AssetDatabase.GetAssetPath(asset);
             if (!string.IsNullOrEmpty(path) && AssetDatabase.TryGetGUIDAndLocalFileIdentifier(asset, out string guid, out long localId))
                 return $"{guid}:{localId}:{asset.name}:{AssetDatabase.GetAssetDependencyHash(path)}";
-            return $"{asset.GetHashCode()}:{asset.name}:{EditorJsonUtility.ToJson(asset)}";
+            return asset is AnimationClip ? $"{asset.GetHashCode()}:{asset.name}" : $"{asset.GetHashCode()}:{asset.name}:{EditorJsonUtility.ToJson(asset)}";
         }
 
         static unsafe void FeedClip(ref xxHash3.StreamingState hasher, AnimationClip clip)
@@ -205,6 +205,15 @@ namespace SA.Editor
                 return;
             var metadata = new float4(clip.length, clip.frameRate, clip.legacy ? 1f : 0f, clip.isLooping ? 1f : 0f);
             hasher.Update(&metadata, sizeof(float4));
+            var settings = AnimationUtility.GetAnimationClipSettings(clip);
+            var timing = new float4(settings.startTime, settings.stopTime, settings.orientationOffsetY, settings.level);
+            var cycle = settings.cycleOffset;
+            var flags = (settings.loopTime ? 1 : 0) | (settings.loopBlend ? 2 : 0) | (settings.loopBlendOrientation ? 4 : 0)
+                | (settings.loopBlendPositionY ? 8 : 0) | (settings.loopBlendPositionXZ ? 16 : 0) | (settings.keepOriginalOrientation ? 32 : 0)
+                | (settings.keepOriginalPositionY ? 64 : 0) | (settings.keepOriginalPositionXZ ? 128 : 0) | (settings.heightFromFeet ? 256 : 0) | (settings.mirror ? 512 : 0);
+            hasher.Update(&timing, sizeof(float4));
+            hasher.Update(&cycle, sizeof(float));
+            hasher.Update(&flags, sizeof(int));
             foreach (var binding in AnimationUtility.GetCurveBindings(clip))
             {
                 Feed(ref hasher, binding.path);
@@ -240,7 +249,7 @@ namespace SA.Editor
             return builder.CreateBlobAssetReference<RigBlob>(Allocator.Persistent);
         }
 
-        public static BlobAssetReference<Clip> BuildClip(Transform root, List<Transform> skeleton, AnimationClip clip, float sampleRate, Hash128 rigId, Hash128 id)
+        public static BlobAssetReference<Clip> BuildClip(Transform root, List<Transform> skeleton, AnimationClip clip, float sampleRate, Hash128 rigId, Hash128 id, bool inPlace = false, Transform motionBone = null)
         {
             using var builder = new BlobBuilder(Allocator.Temp);
             ref var target = ref builder.ConstructRoot<Clip>();
@@ -264,10 +273,12 @@ namespace SA.Editor
                 var mapped = new Transform[boneCount];
                 for (var b = 0; b < boneCount; b++)
                     mapped[b] = copy.transform.Find(AnimationUtility.CalculateTransformPath(skeleton[b], root));
+                var animationRoot = copy.GetComponentInChildren<Animator>(true);
+                var sampleTarget = animationRoot != null ? animationRoot.gameObject : copy;
                 for (var f = 0; f < frames; f++)
                 {
                     Restore(all, rest);
-                    clip.SampleAnimation(copy, clip.length * f / (frames - 1));
+                    clip.SampleAnimation(sampleTarget, clip.length * f / (frames - 1));
                     for (var b = 0; b < boneCount; b++)
                     {
                         var pose = mapped[b] != null ? Local(mapped[b]) : Local(skeleton[b]);
@@ -276,13 +287,40 @@ namespace SA.Editor
                         samples[f * boneCount + b] = pose;
                     }
                 }
+                var motion = MotionIndex(root, skeleton, motionBone);
+                if (inPlace && motion >= 0)
+                    RemoveTravel(samples, skeleton, frames, motion);
                 var settings = AnimationUtility.GetAnimationClipSettings(clip);
                 if (settings.hasAdditiveReferencePose && settings.additiveReferencePoseClip != null)
                 {
                     Restore(all, rest);
-                    settings.additiveReferencePoseClip.SampleAnimation(copy, settings.additiveReferencePoseTime);
+                    settings.additiveReferencePoseClip.SampleAnimation(sampleTarget, settings.additiveReferencePoseTime);
                     for (var b = 0; b < boneCount; b++)
                         reference[b] = mapped[b] != null ? Local(mapped[b]) : Local(skeleton[b]);
+                    if (inPlace && motion >= 0)
+                    {
+                        var parents = new int[boneCount];
+                        for (var b = 0; b < boneCount; b++)
+                            parents[b] = skeleton.IndexOf(skeleton[b].parent);
+                        var current = ModelPosition(reference, 0, motion, parents);
+                        Restore(all, rest);
+                        settings.additiveReferencePoseClip.SampleAnimation(sampleTarget, 0f);
+                        var start = float3.zero;
+                        for (var b = motion; b >= 0; b = parents[b])
+                        {
+                            var pose = mapped[b] != null ? Local(mapped[b]) : Local(skeleton[b]);
+                            start = pose.Position + math.rotate(pose.Rotation, start * pose.Scale);
+                        }
+                        var delta = current - start;
+                        delta.y = 0f;
+                        for (var b = 0; b < boneCount; b++)
+                            if (parents[b] < 0)
+                            {
+                                var pose = reference[b];
+                                pose.Position -= delta;
+                                reference[b] = pose;
+                            }
+                    }
                 }
                 else
                     for (var b = 0; b < boneCount; b++)
@@ -293,6 +331,56 @@ namespace SA.Editor
                 UnityEngine.Object.DestroyImmediate(copy);
             }
             return builder.CreateBlobAssetReference<Clip>(Allocator.Persistent);
+        }
+
+        static int MotionIndex(Transform root, List<Transform> skeleton, Transform requested)
+        {
+            if (requested != null)
+                return skeleton.IndexOf(requested);
+            var animator = root.GetComponentInChildren<Animator>(true);
+            if (animator != null && animator.avatar != null && animator.avatar.isHuman)
+                foreach (var human in animator.avatar.humanDescription.human)
+                    if (human.humanName == "Hips")
+                        return skeleton.IndexOf(Find(root, human.boneName));
+            for (var i = 0; i < skeleton.Count; i++)
+            {
+                var name = skeleton[i].name.ToLowerInvariant();
+                if (name == "hip" || name == "hips" || name == "pelvis" || name.EndsWith(":hips"))
+                    return i;
+            }
+            return skeleton.Count > 0 ? 0 : -1;
+        }
+
+        static void RemoveTravel(BlobBuilderArray<BonePose> samples, List<Transform> skeleton, int frames, int motion)
+        {
+            var parents = new int[skeleton.Count];
+            for (var b = 0; b < parents.Length; b++)
+                parents[b] = skeleton.IndexOf(skeleton[b].parent);
+            var origin = ModelPosition(samples, 0, motion, parents);
+            for (var f = 0; f < frames; f++)
+            {
+                var start = f * skeleton.Count;
+                var delta = ModelPosition(samples, start, motion, parents) - origin;
+                delta.y = 0f;
+                for (var b = 0; b < parents.Length; b++)
+                    if (parents[b] < 0)
+                    {
+                        var pose = samples[start + b];
+                        pose.Position -= delta;
+                        samples[start + b] = pose;
+                    }
+            }
+        }
+
+        static float3 ModelPosition(BlobBuilderArray<BonePose> samples, int start, int bone, int[] parents)
+        {
+            var position = float3.zero;
+            for (var b = bone; b >= 0; b = parents[b])
+            {
+                var pose = samples[start + b];
+                position = pose.Position + math.rotate(pose.Rotation, position * pose.Scale);
+            }
+            return position;
         }
 
         public static BlobAssetReference<BoneMask> BuildMask(Transform root, List<Transform> skeleton, AvatarMask mask, Hash128 rigId, Hash128 id)
@@ -309,6 +397,35 @@ namespace SA.Editor
                     active[mask.GetTransformPath(i)] = mask.GetTransformActive(i);
             for (var b = 0; b < skeleton.Count; b++)
                 weights[b] = MaskWeight(root, skeleton[b], active);
+            return builder.CreateBlobAssetReference<BoneMask>(Allocator.Persistent);
+        }
+
+        public static int UpperBody(Transform root, List<Transform> skeleton)
+        {
+            var animator = root.GetComponentInChildren<Animator>(true);
+            if (animator != null && animator.avatar != null && animator.avatar.isHuman)
+                foreach (var human in animator.avatar.humanDescription.human)
+                    if (human.humanName == "Spine")
+                        return skeleton.IndexOf(Find(root, human.boneName));
+            for (var i = 0; i < skeleton.Count; i++)
+            {
+                var name = skeleton[i].name.ToLowerInvariant();
+                if (name == "ribs" || name == "spine" || name.EndsWith(":spine") || name == "chest")
+                    return i;
+            }
+            return -1;
+        }
+
+        public static BlobAssetReference<BoneMask> BuildUpperMask(List<Transform> skeleton, int upper, Hash128 rigId, Hash128 id)
+        {
+            using var builder = new BlobBuilder(Allocator.Temp);
+            ref var mask = ref builder.ConstructRoot<BoneMask>();
+            mask.Id = id;
+            mask.RigId = rigId;
+            mask.NameHash = Hash("UpperBody");
+            var weights = builder.Allocate(ref mask.Weights, skeleton.Count);
+            for (var b = 0; b < skeleton.Count; b++)
+                weights[b] = b == upper || skeleton[b].IsChildOf(skeleton[upper]) ? 1f : 0f;
             return builder.CreateBlobAssetReference<BoneMask>(Allocator.Persistent);
         }
 

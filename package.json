@@ -16,6 +16,7 @@
     "name": "SA"
   },
   "dependencies": {
+    "com.sa.motion.unity": "0.1.0",
     "com.unity.entities": "6.7.0",
     "com.unity.entities.graphics": "6.7.0"
   },

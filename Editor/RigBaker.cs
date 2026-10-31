@@ -1,6 +1,7 @@
 using System.Collections.Generic;
 using Unity.Collections;
 using Unity.Entities;
+using Unity.Entities.Hybrid.Baking;
 using Unity.Mathematics;
 using Unity.Rendering;
 using UnityEditor;
@@ -33,15 +34,19 @@ namespace SA.Editor
             foreach (var bone in authoring.ExtraBones)
                 if (bone != null)
                     DependsOn(bone);
-            var animator = GetComponent<Animator>();
+            var animator = GetComponentInChildren<Animator>();
             if (animator != null)
             {
                 DependsOn(animator);
                 DependsOn(animator.avatar);
+                DependsOn(animator.runtimeAnimatorController);
             }
+            foreach (var source in authoring.AnimationLibraries)
+                if (source != null)
+                    DependsOn(source);
             var errors = new List<string>();
             var clips = new List<AnimationClip>();
-            foreach (var clip in authoring.Clips)
+            foreach (var clip in AnimationDiscovery.Clips(authoring))
                 if (clip != null && !clips.Contains(clip))
                 {
                     DependsOn(clip);
@@ -78,8 +83,8 @@ namespace SA.Editor
                 errors.Add("a rig supports fewer than 65535 clips and masks.");
             var names = new HashSet<string>();
             foreach (var clip in clips)
-                if (!names.Add("clip:" + clip.name))
-                    errors.Add($"two clips are named '{clip.name}'. Clip names must be unique per rig.");
+                if (!names.Add("clip:" + AnimationDiscovery.Name(authoring, clip, clips)))
+                    errors.Add($"two clips resolve to the same name '{clip.name}'. Change an animation's name in the resolved animations list.");
             foreach (var mask in masks)
                 if (!names.Add("mask:" + mask.name))
                     errors.Add($"two masks are named '{mask.name}'. Mask names must be unique per rig.");
@@ -88,11 +93,18 @@ namespace SA.Editor
 
             var skeleton = RigBuilder.Skeleton(root, clips, skins, errors, authoring.ExtraBones);
             var skeletonSet = new HashSet<Transform>(skeleton);
+            if (authoring.MotionBone != null)
+            {
+                DependsOn(authoring.MotionBone);
+                if (!skeletonSet.Contains(authoring.MotionBone))
+                    errors.Add("MotionBone must be part of this rig's skeleton.");
+            }
             foreach (var bone in skeleton)
                 DependsOn(bone);
             for (var i = 0; i < skins.Count; i++)
                 RigBuilder.ValidateSkin(skins[i], meshes[i], skeletonSet, errors);
-            if (authoring.Engine == Engine.Gpu)
+            var cpu = authoring.Engine == Engine.Cpu || authoring.Inertialize || authoring.FootIK;
+            if (!cpu)
                 foreach (var renderer in GetComponentsInChildren<Renderer>())
                     for (var t = renderer.transform; t != null && t != root; t = t.parent)
                         if (skeletonSet.Contains(t))
@@ -120,13 +132,14 @@ namespace SA.Editor
             var clipAssets = AddBuffer<ClipAsset>(entity);
             foreach (var clip in clips)
             {
-                var id = RigBuilder.ClipKey(root, clip, authoring.SampleRate, rigId);
+                var inPlace = authoring.IsInPlace(clip);
+                var id = RigBuilder.ClipKey(root, clip, authoring.SampleRate, rigId, inPlace, authoring.MotionBone);
                 if (!TryGetBlobAssetReference(id, out BlobAssetReference<Clip> asset))
                 {
-                    asset = RigBuilder.BuildClip(root, skeleton, clip, authoring.SampleRate, rigId, id);
+                    asset = RigBuilder.BuildClip(root, skeleton, clip, authoring.SampleRate, rigId, id, inPlace, authoring.MotionBone);
                     AddBlobAssetWithCustomHash(ref asset, id);
                 }
-                clipAssets.Add(new ClipAsset { Value = asset });
+                clipAssets.Add(new ClipAsset { Value = asset, NameHash = RigBuilder.Hash(AnimationDiscovery.Name(authoring, clip, clips)) });
             }
             var maskAssets = AddBuffer<MaskAsset>(entity);
             for (var m = -1; m < masks.Count; m++)
@@ -136,6 +149,17 @@ namespace SA.Editor
                 if (!TryGetBlobAssetReference(id, out BlobAssetReference<BoneMask> asset))
                 {
                     asset = RigBuilder.BuildMask(root, skeleton, mask, rigId, id);
+                    AddBlobAssetWithCustomHash(ref asset, id);
+                }
+                maskAssets.Add(new MaskAsset { Value = asset });
+            }
+            var upper = RigBuilder.UpperBody(root, skeleton);
+            if (upper >= 0 && !masks.Exists(m => m.name == "UpperBody"))
+            {
+                var id = new Unity.Entities.Hash128(UnityEngine.Hash128.Compute(rigId + ":SA.UpperBody.1").ToString());
+                if (!TryGetBlobAssetReference(id, out BlobAssetReference<BoneMask> asset))
+                {
+                    asset = RigBuilder.BuildUpperMask(skeleton, upper, rigId, id);
                     AddBlobAssetWithCustomHash(ref asset, id);
                 }
                 maskAssets.Add(new MaskAsset { Value = asset });
@@ -156,8 +180,8 @@ namespace SA.Editor
 
             var boneEntities = new NativeArray<Entity>(skeleton.Count, Allocator.Temp);
             for (var b = 0; b < skeleton.Count; b++)
-                boneEntities[b] = GetEntity(skeleton[b], authoring.Engine == Engine.Cpu ? TransformUsageFlags.Dynamic : TransformUsageFlags.None);
-            if (authoring.Engine == Engine.Cpu)
+                boneEntities[b] = GetEntity(skeleton[b], cpu ? TransformUsageFlags.Dynamic : TransformUsageFlags.None);
+            if (cpu)
             {
                 AddComponent<CpuEngine>(entity);
                 var bones = AddBuffer<BoneEntity>(entity);
@@ -231,12 +255,22 @@ namespace SA.Editor
                 {
                     if (!EntityManager.Exists(skin.Renderer))
                         continue;
-                    commands.AddComponent(skin.Renderer, new Skin { Value = skin.Skin, Rig = entity });
-                    commands.AddComponent(skin.Renderer, new SkinBinding());
-                    if (EntityManager.HasComponent<RenderBounds>(skin.Renderer))
-                        commands.SetComponent(skin.Renderer, new RenderBounds { Value = skin.Bounds });
+                    Bind(ref commands, skin.Renderer, skin, entity);
+                    if (EntityManager.HasBuffer<AdditionalEntitiesBakingData>(skin.Renderer))
+                        foreach (var additional in EntityManager.GetBuffer<AdditionalEntitiesBakingData>(skin.Renderer))
+                            Bind(ref commands, additional.Value, skin, entity);
                 }
             commands.Playback(EntityManager);
+        }
+
+        void Bind(ref EntityCommandBuffer commands, Entity renderer, in BakedSkin skin, Entity rig)
+        {
+            if (!EntityManager.Exists(renderer) || !EntityManager.HasComponent<MaterialMeshInfo>(renderer))
+                return;
+            commands.AddComponent(renderer, new Skin { Value = skin.Skin, Rig = rig });
+            commands.AddComponent(renderer, new SkinBinding());
+            if (EntityManager.HasComponent<RenderBounds>(renderer))
+                commands.SetComponent(renderer, new RenderBounds { Value = skin.Bounds });
         }
     }
 }

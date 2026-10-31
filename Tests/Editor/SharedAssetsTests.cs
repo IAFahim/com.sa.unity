@@ -161,7 +161,7 @@ namespace SA.Tests
         }
 
         [Test]
-        public void SkinLayoutIsStableAndUnlistedAnimatedBonesRequireExtraBones()
+        public void SkinLayoutIsStableAndDiscoversUnskinnedSkeletonDescendants()
         {
             var root = Character("Rig");
             var skin = root.gameObject.AddComponent<SkinAuthoring>();
@@ -177,7 +177,8 @@ namespace SA.Tests
             Assert.AreEqual(RigBuilder.RigId(root, before), RigBuilder.RigId(root, after));
             added.SetCurve("Hips/Socket", typeof(Transform), "m_LocalPosition.y", AnimationCurve.Linear(0, 0, 1, 1));
             RigBuilder.Skeleton(root, new[] { added }, new[] { skin }, errors);
-            Assert.IsTrue(errors.Exists(e => e.Contains("ExtraBones")));
+            Assert.IsEmpty(errors);
+            Assert.Contains(extra, before);
             errors.Clear();
             var extended = RigBuilder.Skeleton(root, new[] { added }, new[] { skin }, errors, new[] { extra });
             Assert.IsEmpty(errors);

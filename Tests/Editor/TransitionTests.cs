@@ -19,6 +19,23 @@ namespace SA.Tests
         static BonePose Read(LocalTransform transform) => new BonePose { Position = transform.Position, Rotation = transform.Rotation, Scale = transform.Scale };
 
         [Test]
+        public void LocomotionSwitchPreservesGaitPhaseWithoutRestartingRepeatedCalls()
+        {
+            using var rig = TestRigs.Build();
+            using var world = new World("SA.Transition.Gait");
+            var states = world.EntityManager.AddBuffer<ClipState>(world.EntityManager.CreateEntity());
+            var intent = new TransitionIntent();
+            TransitionPlayback.Play(ref states, ref intent, 1, TestRigs.Clip(rig, 0), 0.4f, PlayOptions.Default);
+            Playback.Step(ref states, rig.Clips, 0.73f);
+            Assert.AreEqual(RequestDecision.Start, TransitionPlayback.PlaySynced(ref states, ref intent, 2, TestRigs.Clip(rig, 1), 0.4f, PlayOptions.Default));
+            Assert.AreEqual(0.73f, states[0].Phase, 1e-5f);
+            Playback.Step(ref states, rig.Clips, 0.1f);
+            var phase = states[0].Phase;
+            Assert.AreEqual(RequestDecision.Keep, TransitionPlayback.PlaySynced(ref states, ref intent, 2, TestRigs.Clip(rig, 1), 0.4f, PlayOptions.Default));
+            Assert.AreEqual(phase, states[0].Phase);
+        }
+
+        [Test]
         public void RepeatingTheSameRequestKeepsRevisionAndPhase()
         {
             using var rig = TestRigs.Build();

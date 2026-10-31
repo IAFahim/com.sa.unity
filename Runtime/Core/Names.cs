@@ -15,7 +15,7 @@ namespace SA
         public static ClipId Clip(ReadOnlySpan<ClipAsset> clips, uint nameHash)
         {
             for (var i = 0; i < clips.Length; i++)
-                if (clips[i].Value.IsCreated && clips[i].Value.Value.NameHash == nameHash)
+                if (clips[i].Value.IsCreated && (clips[i].NameHash != 0 ? clips[i].NameHash : clips[i].Value.Value.NameHash) == nameHash)
                     return new ClipId((ushort)i);
             return ClipId.None;
         }

@@ -38,6 +38,7 @@ namespace SA
     public struct ClipAsset : IBufferElementData
     {
         public BlobAssetReference<Clip> Value;
+        public uint NameHash;
     }
 
     [InternalBufferCapacity(0)]

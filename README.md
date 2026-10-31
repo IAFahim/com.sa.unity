@@ -10,10 +10,14 @@ Setup
 
 0. Add the portable motion bridge to the project's `Packages/manifest.json`, next to this package: `"com.sa.motion.unity": "<path or git url of sa-motion>/packages/com.sa.motion.unity"`. `SA.Runtime` references it.
 
-1. Add `RigAuthoring` to the character root. List the clips and masks. Pick `Engine.Gpu` (fast, no bone entities) or `Engine.Cpu` (bone entities you can drive).
-2. Select the character and run `Tools/SA/Convert Skinned Mesh Renderers`. Each `SkinnedMeshRenderer` becomes a `MeshRenderer` plus `SkinAuthoring`.
-3. Give the renderer a skinning material. Import the `Showcase` sample and use `SA Skinned Lit.shader`, or add a Vector2 property `_SaSkin` (Override Property Declaration: Hybrid Per Instance) to your ShaderGraph and feed `Skin_float` from `Runtime/Shaders/Skinning.hlsl` through a Custom Function node.
-4. Put the character in a subscene and press Play.
+1. Select a model, prefab or scene character and run `Tools/SA/Set Up Character`. For physics use `Tools/SA/Set Up Ragdoll` from the Reactions package. Selecting an asset creates an SA prefab; the imported model is preserved.
+2. Drop additional models, Animator Controllers or folders into **Animation packs**. Clips, the Avatar, skin bones and materials are discovered. Runtime playback uses ECS without Animator Controller evaluation.
+3. Choose **Start animation**, **In place by default**, **Smooth transitions**, and optionally **Plant feet on ground**. Smooth transitions and foot IK enable CPU bones automatically. Foot IK needs the Reactions package and Unity Physics ground colliders.
+4. Put the resulting prefab in a subscene and press Play.
+
+Open **Resolved animations** to rename a clip or toggle **In place** for it. Packs may contain clips with the same name: later entries get a source-qualified name; changing that name does not duplicate their sampled data. Imported source clips are preserved. Humanoid animation packs use the character's Humanoid Avatar; generic clips require a compatible hierarchy.
+
+Bone overrides, masks, sample rate and engine selection live under **Advanced**. The setup action preserves textures/colors and all material slots using the bundled URP skinning shader. Custom shader graphs can still use `Skin_float` from `Runtime/Shaders/Skinning.hlsl` and the `_SaSkin` per-instance property.
 
 Why the conversion: a `SkinnedMeshRenderer` is always baked by someone else's deformation pipeline. A `MeshRenderer` goes through the standard Entities Graphics baker and SA owns the skinning.
 
@@ -51,7 +55,7 @@ Skeletons, sampled clips and masks are separate immutable blobs. Characters with
 
 `Rig.Value` contains only skeleton data. `ClipAsset` and `MaskAsset` buffers contain small references; each character owns its playback states and output pose. Look up clips with `Names.Clip(assets, name)` and masks with `Names.Mask(masks, name)`. Clip and mask IDs are local to those tables.
 
-With skins, the skeleton is the union of skin bones, their ancestors, Avatar bones and `RigAuthoring.ExtraBones`. Animated transforms outside that skeleton are a baking error; add them to ExtraBones. Without skins, all descendants are included. Clip lists never select the skeleton.
+With skins, the skeleton includes the skin/Avatar skeleton branches and their descendants, including unskinned sockets and helpers. ExtraBones is an optional override. Without skins, all descendants are included. Clip lists never select the skeleton.
 
 Sharing requires matching hierarchy/rest pose, clip source/sub-asset/content, sampling rate and sampler context, including Avatar and additive reference. Different compatible character placements do not duplicate generic clips. See `Documentation~/sharing.md` for migration and cache limits.
 
@@ -86,6 +90,10 @@ A new key cuts to the destination and the pose then decays from where it was. Th
 Limits
 ------
 
-No root motion, events, IK solvers, blend shapes, humanoid retargeting, attachments to GPU rigs or animation culling.
+`TransitionPlayback.PlaySynced` carries the gait phase into an incoming looping clip, useful for Walk/Run/Sprint. Ordinary `Play` keeps its restart semantics for one-shot actions.
+
+The optional `com.sa.unity.ik` package supplies head look-at and two-bone target constraints. Reactions adds ground-aware foot planting and hit-flinch playback on a separate upper-body layer.
+
+No extracted gameplay root motion, animation events, blend shapes, generic cross-skeleton retargeting, attachments to GPU rigs or animation culling. In-place baking removes horizontal travel while preserving vertical movement; it does not move the gameplay entity.
 Meshes need `baseVertex` 0 and at most 4 influences per vertex are kept.
 GPU rigs are one compute thread per character; see `Documentation~/benchmark.md` for measured cost.
