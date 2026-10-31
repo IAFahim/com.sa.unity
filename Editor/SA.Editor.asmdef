@@ -10,13 +10,18 @@
         "Unity.Mathematics",
         "Unity.Mathematics.Extensions",
         "Unity.Transforms",
-        "Unity.Entities.Graphics"
+        "Unity.Entities.Graphics",
+        "SA.Motion.Unity"
     ],
-    "includePlatforms": ["Editor"],
+    "includePlatforms": [
+        "Editor"
+    ],
     "excludePlatforms": [],
     "allowUnsafeCode": true,
-    "overrideReferences": false,
-    "precompiledReferences": [],
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "SA.Motion.dll"
+    ],
     "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": [],

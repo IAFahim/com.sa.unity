@@ -70,6 +70,17 @@ Engines
 
 Both engines skin through the same vertex function.
 
+Transitions without transition clips
+------------------------------------
+
+Tick `Inertialize` on a CPU `RigAuthoring`. The rig then carries a `TransitionIntent` and one `BoneTransition` per bone (about 208 bytes each).
+
+```csharp
+TransitionPlayback.Play(ref states, ref intent, key: 7, Names.Clip(assets, "Run"), seconds: 0.3f, PlayOptions.Default);
+```
+
+A new key cuts to the destination and the pose then decays from where it was. The same key again only updates speed and weights, so calling it every frame is correct. Reusing a key for a different clip set returns `RequestDecision.Misuse` and changes nothing. `TransitionPlayback.Blend` takes the same arguments plus weights, so locomotion blends keep working inside one request. GPU rigs do not support this yet.
+
 Limits
 ------
 

@@ -7,13 +7,16 @@
         "Unity.Entities",
         "Unity.Mathematics",
         "Unity.Transforms",
-        "Unity.Entities.Graphics"
+        "Unity.Entities.Graphics",
+        "SA.Motion.Unity"
     ],
     "includePlatforms": [],
     "excludePlatforms": [],
     "allowUnsafeCode": true,
-    "overrideReferences": false,
-    "precompiledReferences": [],
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "SA.Motion.dll"
+    ],
     "autoReferenced": true,
     "defineConstraints": [],
     "versionDefines": [],

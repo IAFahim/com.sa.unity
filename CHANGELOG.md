@@ -1,3 +1,9 @@
+Unreleased
+----------
+
+- Opt-in inertialized transitions on CPU rigs: `RigAuthoring.Inertialize`, `TransitionPlayback.Play` and `Blend`, `TransitionIntent`, `BoneTransition`. A new request cuts to its destination and decays the offset from the last output; no outgoing clip is kept alive.
+- `SA.Runtime` now references the portable `SA.Motion` library through the `com.sa.motion.unity` package. Add that package to the project manifest.
+
 0.3.0
 -----
 
