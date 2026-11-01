@@ -279,13 +279,21 @@ namespace SA.Editor
                 for (var b = 0; b < boneCount; b++)
                     resting[b] = Local(skeleton[b]);
                 var moves = false;
+                var up = copy.transform.up;
+                var restHeight = Vector3.Dot(sampleTarget.transform.position, up);
+                var top = new bool[boneCount];
+                for (var b = 0; b < boneCount; b++)
+                    top[b] = mapped[b] != null && mapped[b].parent != null && skeleton.IndexOf(skeleton[b].parent) < 0;
                 for (var f = 0; f < frames; f++)
                 {
                     Restore(all, rest);
                     clip.SampleAnimation(sampleTarget, clip.length * f / (frames - 1));
+                    var lift = Vector3.Dot(sampleTarget.transform.position, up) - restHeight;
                     for (var b = 0; b < boneCount; b++)
                     {
                         var pose = mapped[b] != null ? Local(mapped[b]) : Local(skeleton[b]);
+                        if (top[b])
+                            pose.Position += (float3)mapped[b].parent.InverseTransformVector(up * lift);
                         moves |= ClipCompatibility.Differs(pose, resting[b]);
                         if (f > 0 && math.dot(pose.Rotation.value, samples[(f - 1) * boneCount + b].Rotation.value) < 0f)
                             pose.Rotation = new quaternion(-pose.Rotation.value);

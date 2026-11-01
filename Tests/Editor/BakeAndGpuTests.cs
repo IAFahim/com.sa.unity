@@ -91,6 +91,34 @@ namespace SA.Tests
         }
 
         [Test]
+        public void ARootObjectBouncedByTheClipLiftsTheBakedTopBones()
+        {
+            var root = Node("Root", null, new Vector3(5, 0, 0), Quaternion.Euler(0, 90, 0));
+            var hips = Node("Hips", root, Vector3.up, Quaternion.identity);
+            Node("Arm", hips, Vector3.right, Quaternion.identity);
+            var clip = new AnimationClip { name = "Bounce" };
+            created.Add(clip);
+            clip.SetCurve("", typeof(Transform), "m_LocalPosition.y", AnimationCurve.Linear(0f, 0f, 1f, 0.5f));
+            clip.SetCurve("Hips/Arm", typeof(Transform), "localEulerAnglesRaw.z", AnimationCurve.Linear(0f, 0f, 1f, 10f));
+            var errors = new List<string>();
+            var skeleton = RigBuilder.Skeleton(root, new[] { clip }, new SkinAuthoring[0], errors);
+            var rigId = RigBuilder.RigId(root, skeleton);
+            var sampled = RigBuilder.BuildClip(root, skeleton, clip, 30f, rigId, RigBuilder.ClipKey(root, clip, 30f, rigId));
+            try
+            {
+                ref var baked = ref sampled.Value;
+                Assert.AreEqual(1f, baked.Samples[0].Position.y, 1e-5f);
+                Assert.AreEqual(1.25f, baked.Samples[15 * 2].Position.y, 1e-4f);
+                Assert.AreEqual(1.5f, baked.Samples[30 * 2].Position.y, 1e-5f);
+                Assert.AreEqual(1f, baked.Samples[30 * 2 + 1].Position.x, 1e-5f);
+            }
+            finally
+            {
+                sampled.Dispose();
+            }
+        }
+
+        [Test]
         public void InfluencesPackToFourWeightsThatSumExactly()
         {
             var packed = RigBuilder.Pack(new[]
