@@ -15,7 +15,8 @@
     "allowUnsafeCode": true,
     "overrideReferences": true,
     "precompiledReferences": [
-        "SA.Motion.dll"
+        "SA.Motion.dll",
+        "SA.Animation.dll"
     ],
     "autoReferenced": true,
     "defineConstraints": [],

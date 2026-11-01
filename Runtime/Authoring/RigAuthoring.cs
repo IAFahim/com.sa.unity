@@ -11,6 +11,7 @@ namespace SA
         public AnimationClip Clip;
         public string Name;
         public bool InPlace;
+        public bool DisableFootIK;
     }
 
     [DisallowMultipleComponent]
@@ -38,6 +39,14 @@ namespace SA
                 if (option.Clip == clip)
                     return option.InPlace;
             return InPlace;
+        }
+
+        public bool UsesFootIK(AnimationClip clip)
+        {
+            foreach (var option in ClipOptions)
+                if (option.Clip == clip)
+                    return !option.DisableFootIK;
+            return true;
         }
     }
 }

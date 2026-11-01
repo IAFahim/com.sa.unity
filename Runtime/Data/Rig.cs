@@ -39,6 +39,7 @@ namespace SA
     {
         public BlobAssetReference<Clip> Value;
         public uint NameHash;
+        public float FootIK;
     }
 
     [InternalBufferCapacity(0)]

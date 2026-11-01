@@ -51,6 +51,11 @@ namespace SA.Editor
             }
             foreach (var source in rig.AnimationLibraries)
                 Load(source, result, names);
+            var referenced = new List<AnimationClip>();
+            foreach (var motion in rig.GetComponents<IMotionClips>())
+                motion.CollectClips(referenced);
+            foreach (var clip in referenced)
+                Add(clip, result, names);
             return result;
         }
 

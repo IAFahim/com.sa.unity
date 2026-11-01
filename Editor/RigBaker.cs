@@ -44,6 +44,11 @@ namespace SA.Editor
             foreach (var source in authoring.AnimationLibraries)
                 if (source != null)
                     DependsOn(source);
+            foreach (var motion in authoring.GetComponents<IMotionClips>())
+                DependsOn((UnityEngine.Object)motion);
+            var features = authoring.GetComponents<ICpuPoseFeature>();
+            foreach (var feature in features)
+                DependsOn((UnityEngine.Object)feature);
             var errors = new List<string>();
             var clips = new List<AnimationClip>();
             foreach (var clip in AnimationDiscovery.Clips(authoring))
@@ -103,7 +108,7 @@ namespace SA.Editor
                 DependsOn(bone);
             for (var i = 0; i < skins.Count; i++)
                 RigBuilder.ValidateSkin(skins[i], meshes[i], skeletonSet, errors);
-            var cpu = authoring.Engine == Engine.Cpu || authoring.Inertialize || authoring.FootIK;
+            var cpu = authoring.Engine == Engine.Cpu || authoring.Inertialize || authoring.FootIK || features.Length > 0;
             if (!cpu)
                 foreach (var renderer in GetComponentsInChildren<Renderer>())
                     for (var t = renderer.transform; t != null && t != root; t = t.parent)
@@ -139,7 +144,7 @@ namespace SA.Editor
                     asset = RigBuilder.BuildClip(root, skeleton, clip, authoring.SampleRate, rigId, id, inPlace, authoring.MotionBone);
                     AddBlobAssetWithCustomHash(ref asset, id);
                 }
-                clipAssets.Add(new ClipAsset { Value = asset, NameHash = RigBuilder.Hash(AnimationDiscovery.Name(authoring, clip, clips)) });
+                clipAssets.Add(new ClipAsset { Value = asset, NameHash = RigBuilder.Hash(AnimationDiscovery.Name(authoring, clip, clips)), FootIK = authoring.UsesFootIK(clip) ? 1f : 0f });
             }
             var maskAssets = AddBuffer<MaskAsset>(entity);
             for (var m = -1; m < masks.Count; m++)
@@ -165,6 +170,8 @@ namespace SA.Editor
                 maskAssets.Add(new MaskAsset { Value = asset });
             }
             AddComponent(entity, new TimeScale { Value = authoring.TimeScale });
+            if (authoring.GetComponents<IMotionClips>().Length > 0)
+                AddComponent<MotionDriver>(entity);
             AddComponent(entity, new PoseSlot { Base = -1 });
             var states = AddBuffer<ClipState>(entity);
             if (authoring.Autoplay != null)

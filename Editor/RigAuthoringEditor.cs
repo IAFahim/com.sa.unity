@@ -38,11 +38,13 @@ namespace SA.Editor
                     var renamed = EditorGUILayout.TextField(name);
                     var value = rig.IsInPlace(clip);
                     var next = EditorGUILayout.ToggleLeft("In place", value, GUILayout.Width(75));
-                    if (next != value || renamed != name)
+                    var foot = rig.UsesFootIK(clip);
+                    var footNext = EditorGUILayout.ToggleLeft(new GUIContent("Foot IK", "Let the leg solver plant and roll the feet while this clip plays. Untick for flips, jumps and anything airborne."), foot, GUILayout.Width(70));
+                    if (next != value || renamed != name || footNext != foot)
                     {
                         Undo.RecordObject(rig, "Change Clip Motion");
                         var index = rig.ClipOptions.FindIndex(c => c.Clip == clip);
-                        var option = new ClipSettings { Clip = clip, InPlace = next, Name = renamed };
+                        var option = new ClipSettings { Clip = clip, InPlace = next, Name = renamed, DisableFootIK = !footNext };
                         if (index < 0)
                             rig.ClipOptions.Add(option);
                         else
