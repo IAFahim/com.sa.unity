@@ -11,3 +11,4 @@ How to drive the Editor from a shell, and the Unity Physics findings, are in `/h
 6. `Debug.Log` from eval rarely shows. Write files under `Temp/sa/` and read them.
 7. HLSL does not allow structs in `?:`. Use `if`.
 8. An unfocused Editor throttles Play mode to about 1 frame per second. Measure with the explicit `Benchmarks` tests, not Play mode.
+9. Build it for a person: see the section of that name in the same file. Do the person's walk before you say done, leave no probe in a scene, and add no hidden switch.

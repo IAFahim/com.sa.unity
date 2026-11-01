@@ -11,4 +11,8 @@ namespace SA
     public interface ICpuPoseFeature
     {
     }
+
+    public interface IFootIKSettings : ICpuPoseFeature
+    {
+    }
 }

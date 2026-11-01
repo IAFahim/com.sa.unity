@@ -12,23 +12,30 @@ namespace SA.Editor
 
         public static void SetUpSelection(Action<GameObject> extra = null)
         {
+            if (Selection.gameObjects.Length == 0)
+            {
+                Debug.LogWarning("SA: select a character in the Hierarchy or the Project window, then run Set Up Character again.");
+                return;
+            }
             foreach (var selected in Selection.gameObjects)
             {
                 if (!EditorUtility.IsPersistent(selected))
                 {
                     var configured = Configure(selected);
+                    Report(configured, selected);
                     extra?.Invoke(configured.gameObject);
                     continue;
                 }
                 var instance = (GameObject)PrefabUtility.InstantiatePrefab(selected);
                 try
                 {
-                    Configure(instance);
+                    var configured = Configure(instance);
                     extra?.Invoke(instance);
                     EnsureFolder("Assets/SA/Characters");
                     var path = AssetDatabase.GenerateUniqueAssetPath("Assets/SA/Characters/" + selected.name + " SA.prefab");
-                    PrefabUtility.SaveAsPrefabAsset(instance, path);
-                    Selection.activeObject = AssetDatabase.LoadAssetAtPath<GameObject>(path);
+                    var saved = PrefabUtility.SaveAsPrefabAsset(instance, path);
+                    Report(configured, saved, "Saved as " + path + ". Your original model was not changed.");
+                    Selection.activeObject = saved;
                 }
                 finally
                 {
@@ -86,6 +93,33 @@ namespace SA.Editor
                 rig.Autoplay = clips.Find(c => c.name.IndexOf("idle", StringComparison.OrdinalIgnoreCase) >= 0) ?? clips[0];
             EditorUtility.SetDirty(rig);
             return rig;
+        }
+
+        public static string Describe(RigAuthoring rig)
+        {
+            var animator = rig.GetComponentInChildren<Animator>(true);
+            var avatar = animator != null ? animator.avatar : null;
+            var clips = AnimationDiscovery.Clips(rig);
+            var skins = rig.GetComponentsInChildren<SkinAuthoring>(true).Length;
+            var motions = rig.GetComponents<IMotionClips>().Length;
+            var text = new System.Text.StringBuilder("SA: set up '" + rig.name + "'.");
+            text.Append(avatar != null ? " Avatar '" + avatar.name + (avatar.isHuman ? "' (humanoid)." : "' (not humanoid: Leg IK then needs bones named like a humanoid).") : " NO AVATAR FOUND: Leg IK and retargeting need one. Assign it on the Animator.");
+            text.Append(skins > 0 ? " " + skins + " skinned mesh" + (skins == 1 ? "" : "es") + " converted." : " NO SKINNED MESH converted: the character will be invisible. Check that the model has a Skinned Mesh Renderer.");
+            text.Append(clips.Count > 0 ? " " + clips.Count + " clips found." : " NO CLIPS FOUND: drop a model, controller or folder into Animation packs.");
+            if (rig.Autoplay != null)
+                text.Append(" Starts with '" + rig.Autoplay.name + "'.");
+            text.Append(motions == 0 ? " Next: add a motion with the Add buttons on Rig Authoring (Single, 1D, 2D or 8-way)." : " Motions: " + motions + ".");
+            text.Append(rig.FootIK || rig.GetComponent<IFootIKSettings>() != null ? " Feet are planted." : " Tick Plant feet on ground to keep feet from sliding.");
+            return text.ToString();
+        }
+
+        public static void Report(RigAuthoring rig, UnityEngine.Object context, string extra = null)
+        {
+            var text = Describe(rig) + (extra != null ? " " + extra : "");
+            if (text.Contains("NO "))
+                Debug.LogWarning(text, context);
+            else
+                Debug.Log(text, context);
         }
 
         public static Material SkinMaterial(Material source)
