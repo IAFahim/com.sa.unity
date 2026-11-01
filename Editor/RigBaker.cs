@@ -135,13 +135,21 @@ namespace SA.Editor
             var entity = GetEntity(TransformUsageFlags.Dynamic);
             AddComponent(entity, new Rig { Value = rig });
             var clipAssets = AddBuffer<ClipAsset>(entity);
+            var humanoid = animator != null && animator.avatar != null && animator.avatar.isHuman;
             foreach (var clip in clips)
             {
                 var inPlace = authoring.IsInPlace(clip);
                 var id = RigBuilder.ClipKey(root, clip, authoring.SampleRate, rigId, inPlace, authoring.MotionBone);
+                var fit = ClipCompatibility.Of(clip.isHumanMotion, humanoid);
+                if (fit != ClipFit.Fits)
+                    Debug.LogWarning($"SA: {authoring.name}: clip '{clip.name}' {ClipCompatibility.Advice(fit)}", authoring);
                 if (!TryGetBlobAssetReference(id, out BlobAssetReference<Clip> asset))
                 {
-                    asset = RigBuilder.BuildClip(root, skeleton, clip, authoring.SampleRate, rigId, id, inPlace, authoring.MotionBone);
+                    var notes = fit == ClipFit.Fits ? new List<string>() : null;
+                    asset = RigBuilder.BuildClip(root, skeleton, clip, authoring.SampleRate, rigId, id, inPlace, authoring.MotionBone, notes);
+                    if (notes != null)
+                        foreach (var note in notes)
+                            Debug.LogWarning($"SA: {authoring.name}: clip '{clip.name}' {note}", authoring);
                     AddBlobAssetWithCustomHash(ref asset, id);
                 }
                 clipAssets.Add(new ClipAsset { Value = asset, NameHash = RigBuilder.Hash(AnimationDiscovery.Name(authoring, clip, clips)), FootIK = authoring.UsesFootIK(clip) ? 1f : 0f });

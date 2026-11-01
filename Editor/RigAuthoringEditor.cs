@@ -42,6 +42,11 @@ namespace SA.Editor
             FootHelp(rig, settings);
             MotionHelp(rig);
             var clips = AnimationDiscovery.Clips(rig);
+            var animator = rig.GetComponentInChildren<Animator>(true);
+            var humanoid = animator != null && animator.avatar != null && animator.avatar.isHuman;
+            var misfits = clips.FindAll(clip => ClipCompatibility.Of(clip.isHumanMotion, humanoid) != ClipFit.Fits);
+            if (misfits.Count > 0)
+                EditorGUILayout.HelpBox(misfits.Count + " of these animations cannot move this character: '" + misfits[0].name + "' " + ClipCompatibility.Advice(ClipCompatibility.Of(misfits[0].isHumanMotion, humanoid)), MessageType.Warning);
             animations = EditorGUILayout.Foldout(animations, "Resolved animations (" + clips.Count + ")", true);
             if (animations)
                 foreach (var clip in clips)
