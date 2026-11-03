@@ -12,8 +12,20 @@ namespace SA.Editor
 
         const string Ual1Path = "Assets/UAL/UAL1_Standard.fbx";
         const string Ual2Path = "Assets/UAL/UAL2_Standard.fbx";
-        const string KyleModelPath = "Assets/Samples/Rukhanka Animation System 2/2.10.0/Rukhanka Animation Samples/SampleAssets/Robot Kyle/Model/Robot Kyle.fbx";
-        const string KyleAnimDir = "Assets/Samples/Rukhanka Animation System 2/2.10.0/Rukhanka Animation Samples/SampleAssets/Robot Kyle/Animations/";
+        static readonly string[] KyleAnimNames = { "Idle.anim", "Kyle_Walk.anim", "Kyle_Run.anim", "Kyle_Sprint.anim" };
+
+        static string FindSampleAssetPath(string fileName)
+        {
+            foreach (var guid in AssetDatabase.FindAssets(System.IO.Path.GetFileNameWithoutExtension(fileName)))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (path.EndsWith("/" + fileName, StringComparison.Ordinal))
+                {
+                    return path;
+                }
+            }
+            return "";
+        }
 
         sealed class RigRow
         {
@@ -137,38 +149,40 @@ namespace SA.Editor
 
         static RigRow AuditKyle()
         {
-            var row = new RigRow { RigPath = KyleModelPath, RigName = DisplayName(KyleModelPath) };
-            row.Model = AssetDatabase.LoadAssetAtPath<GameObject>(KyleModelPath);
+            var kyleModel = FindSampleAssetPath("Robot Kyle.fbx");
+            var row = new RigRow { RigPath = kyleModel, RigName = DisplayName(kyleModel) };
+            row.Model = string.IsNullOrEmpty(kyleModel) ? null : AssetDatabase.LoadAssetAtPath<GameObject>(kyleModel);
             if (row.Model == null)
             {
-                row.Problems.Add(row.RigName + " at " + KyleModelPath + ": model asset missing. Fix: restore the asset, then run Tools/SA/Animation Library/Audit and Bake again.");
+                row.Problems.Add(row.RigName + " at " + kyleModel + ": model asset missing. Fix: restore the asset, then run Tools/SA/Animation Library/Audit and Bake again.");
                 row.AvatarLine = "Avatar: no model to read.";
                 row.Approved = false;
                 return row;
             }
-            var avatar = FindAvatar(KyleModelPath);
+            var avatar = FindAvatar(kyleModel);
             if (avatar == null)
             {
-                row.AvatarLine = "Avatar: none found on " + KyleModelPath + ".";
-                row.Problems.Add(row.RigName + " at " + KyleModelPath + ": no Avatar. Fix: set the model Rig to Humanoid and press Apply, then run Tools/SA/Animation Library/Audit and Bake again.");
+                row.AvatarLine = "Avatar: none found on " + kyleModel + ".";
+                row.Problems.Add(row.RigName + " at " + kyleModel + ": no Avatar. Fix: set the model Rig to Humanoid and press Apply, then run Tools/SA/Animation Library/Audit and Bake again.");
             }
             else if (!avatar.isHuman)
             {
                 row.AvatarLine = "Avatar '" + avatar.name + "' is not Humanoid, so it cannot bake.";
-                row.Problems.Add(row.RigName + " at " + KyleModelPath + ": Avatar '" + avatar.name + "' is not Humanoid. Fix: change the model Rig Animation Type to Humanoid, then run Tools/SA/Animation Library/Audit and Bake again.");
+                row.Problems.Add(row.RigName + " at " + kyleModel + ": Avatar '" + avatar.name + "' is not Humanoid. Fix: change the model Rig Animation Type to Humanoid, then run Tools/SA/Animation Library/Audit and Bake again.");
             }
             else if (!avatar.isValid)
             {
                 row.AvatarLine = "Avatar '" + avatar.name + "' is Humanoid but failed validation.";
-                row.Problems.Add(row.RigName + " at " + KyleModelPath + ": Avatar '" + avatar.name + "' failed validation. Fix: reimport the model, then run Tools/SA/Animation Library/Audit and Bake again.");
+                row.Problems.Add(row.RigName + " at " + kyleModel + ": Avatar '" + avatar.name + "' failed validation. Fix: reimport the model, then run Tools/SA/Animation Library/Audit and Bake again.");
             }
             else
             {
                 row.AvatarLine = "Avatar '" + avatar.name + "' is Humanoid and valid.";
             }
-            foreach (var animPath in new[] { KyleAnimDir + "Idle.anim", KyleAnimDir + "Kyle_Walk.anim", KyleAnimDir + "Kyle_Run.anim", KyleAnimDir + "Kyle_Sprint.anim" })
+            foreach (var anim in KyleAnimNames)
             {
-                var clip = AssetDatabase.LoadAssetAtPath<AnimationClip>(animPath);
+                var animPath = FindSampleAssetPath(anim);
+                var clip = string.IsNullOrEmpty(animPath) ? null : AssetDatabase.LoadAssetAtPath<AnimationClip>(animPath);
                 if (clip == null)
                 {
                     row.Problems.Add(row.RigName + " at " + animPath + ": animation missing. Fix: restore the asset, then run Tools/SA/Animation Library/Audit and Bake again.");
