@@ -70,6 +70,14 @@ namespace SA.Tests
             Assert.AreEqual(100, SharedFamilyBake.ScoreBoneName("Hips", "hips"));
             Assert.AreEqual(0, SharedFamilyBake.ScoreBoneName("Hips", "LeftFoot"));
             Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftUpperArm", "LeftArm"), 0);
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("Hips", "pelvis"), SharedFamilyBake.ScoreBoneName("Hips", "thigh_l"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftUpperArm", "upperarm_l"), SharedFamilyBake.ScoreBoneName("LeftUpperArm", "lowerarm_l"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftLowerLeg", "calf_l"), SharedFamilyBake.ScoreBoneName("LeftLowerLeg", "thigh_l"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftFoot", "foot_l"), SharedFamilyBake.ScoreBoneName("LeftFoot", "foot_r"));
+            Assert.AreEqual(0, SharedFamilyBake.ScoreBoneName("LeftFoot", "foot_r"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftThumbIntermediate", "thumb_02_l"), SharedFamilyBake.ScoreBoneName("LeftThumbIntermediate", "thumb_01_l"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("Spine", "spine_01"), SharedFamilyBake.ScoreBoneName("Spine", "spine_02"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("Chest", "spine_02"), SharedFamilyBake.ScoreBoneName("Chest", "spine_01"));
         }
 
         [Test]

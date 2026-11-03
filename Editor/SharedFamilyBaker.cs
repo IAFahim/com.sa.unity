@@ -173,18 +173,126 @@ namespace SA.Editor
         {
             if (string.Equals(canonical, bone, StringComparison.OrdinalIgnoreCase))
                 return 100;
-            var left = Tokens(canonical);
-            var right = new HashSet<string>(Tokens(bone), StringComparer.OrdinalIgnoreCase);
+            var canonicalSide = SideOf(canonical);
+            var boneSide = SideOf(bone);
+            if (canonicalSide != 0 && boneSide != 0 && canonicalSide != boneSide)
+                return 0;
+            var right = new HashSet<string>(CoreTokens(bone), StringComparer.OrdinalIgnoreCase);
             var shared = 0;
-            foreach (var token in left)
+            foreach (var token in CoreTokens(canonical))
                 if (right.Contains(token))
                     shared++;
             if (shared == 0)
                 return 0;
             var score = shared * 10;
+            if (canonicalSide != 0 && canonicalSide == boneSide)
+                score += 10;
             if (bone.IndexOf(canonical, StringComparison.OrdinalIgnoreCase) >= 0 || canonical.IndexOf(bone, StringComparison.OrdinalIgnoreCase) >= 0)
                 score += 5;
             return Math.Min(score, 90);
+        }
+
+        static int SideOf(string name)
+        {
+            var lower = name.ToLowerInvariant();
+            var left = lower.Contains("left") || lower.EndsWith("_l") || lower.EndsWith("-l") || lower.EndsWith(".l") || lower.EndsWith(" l");
+            var right = lower.Contains("right") || lower.EndsWith("_r") || lower.EndsWith("-r") || lower.EndsWith(".r") || lower.EndsWith(" r");
+            if (left && !right)
+                return 1;
+            if (right && !left)
+                return -1;
+            return 0;
+        }
+
+        static List<string> CoreTokens(string text)
+        {
+            var flat = new System.Text.StringBuilder();
+            foreach (var glyph in text)
+                flat.Append(char.IsLetterOrDigit(glyph) ? char.ToLowerInvariant(glyph) : ' ');
+            var joined = System.Text.RegularExpressions.Regex.Replace(flat.ToString(), " +", " ").Trim();
+            if (joined == "spine 01")
+                return new List<string> { "spine" };
+            if (joined == "spine 02")
+                return new List<string> { "chest" };
+            if (joined == "spine 03")
+                return new List<string> { "upper", "chest" };
+            if (joined == "neck 01")
+                return new List<string> { "neck" };
+            var raw = Tokens(text);
+            var finger = false;
+            foreach (var token in raw)
+            {
+                var word = token.ToLowerInvariant();
+                if (word == "thumb" || word == "index" || word == "middle" || word == "ring" || word == "pinky" || word == "little" || word == "toe" || word == "ball")
+                    finger = true;
+            }
+            var cores = new List<string>();
+            foreach (var token in raw)
+            {
+                var word = token.ToLowerInvariant();
+                var mapped = Alias(word, finger);
+                if (string.IsNullOrEmpty(mapped))
+                    continue;
+                foreach (var piece in mapped.Split(' '))
+                    cores.Add(piece);
+            }
+            return cores;
+        }
+
+        static string Alias(string word, bool finger)
+        {
+            switch (word)
+            {
+                case "upperarm": return "upper arm";
+                case "lowerarm": return "lower arm";
+                case "forearm": return "lower arm";
+                case "upperleg": return "upper leg";
+                case "lowerleg": return "lower leg";
+                case "pelvis": case "hip": case "hips": return "hips";
+                case "thigh": return "upper leg";
+                case "calf": case "knee": case "shin": return "lower leg";
+                case "ankle": case "foot": return "foot";
+                case "ball": case "toe": case "toes": return "toes";
+                case "clavicle": case "collar": case "collarbone": return "shoulder";
+                case "shoulder": return "shoulder";
+                case "wrist": case "hand": return "hand";
+                case "neck": return "neck";
+                case "head": case "skull": return "head";
+                case "chest": return "chest";
+                case "ribs": case "ribcage": return "spine";
+                case "spine": return "spine";
+                case "pinky": case "little": return "little";
+                case "arm": return "arm";
+                case "leg": return "leg";
+                case "upper": return "upper";
+                case "lower": return "lower";
+                case "left": return "left";
+                case "right": return "right";
+                case "thumb": return "thumb";
+                case "index": return "index";
+                case "middle": return "middle";
+                case "ring": return "ring";
+                case "root": return "root";
+            }
+            if (word == "joint" || word == "finger")
+                return "";
+            if (word.Length > 0 && char.IsDigit(word[0]))
+            {
+                if (!finger)
+                    return "";
+                var trimmed = word.TrimStart('0');
+                if (trimmed.Length == 0)
+                    return "";
+                var head = trimmed[0];
+                if (head == '1' || head == 'a')
+                    return "proximal";
+                if (head == '2' || head == 'b')
+                    return "intermediate";
+                if (head == '3' || head == 'c')
+                    return "distal";
+                return "";
+            }
+            return word;
         }
 
         static List<string> Tokens(string text)
