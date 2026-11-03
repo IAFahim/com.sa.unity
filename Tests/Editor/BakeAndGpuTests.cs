@@ -219,7 +219,9 @@ namespace SA.Tests
         [Test]
         public void PackageSourceHasNoCommentsReflectionLegacyInputOrRukhanka()
         {
-            var root = Path.GetFullPath("Packages/com.sa.unity");
+            var package = UnityEditor.PackageManager.PackageInfo.FindForAssetPath("Packages/com.sa.unity");
+            Assert.IsNotNull(package);
+            var root = package.resolvedPath;
             var offenders = new List<string>();
             foreach (var pattern in new[] { "*.cs", "*.hlsl", "*.compute", "*.shader" })
                 foreach (var file in Directory.GetFiles(root, pattern, SearchOption.AllDirectories))

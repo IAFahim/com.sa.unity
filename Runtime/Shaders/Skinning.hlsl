@@ -19,9 +19,10 @@ Affine WeightedAffine(Affine a, Affine b, Affine c, Affine d, float4 w)
 float3 SkinDirection(float3 direction, float3 fallback)
 {
     float lengthSquared = dot(direction, direction);
+    float3 result = fallback;
     if (all(isfinite(direction)) && isfinite(lengthSquared) && lengthSquared > 1e-20)
-        return direction * rsqrt(lengthSquared);
-    return fallback;
+        result = direction * rsqrt(lengthSquared);
+    return result;
 }
 
 float3 SkinNormal(Affine m, float3 normal)
@@ -31,9 +32,10 @@ float3 SkinNormal(Affine m, float3 normal)
     float3 z = cross(m.C0.xyz, m.C1.xyz);
     float determinant = dot(m.C0.xyz, x);
     float3 fallback = SkinDirection(TransformVector(m, normal), SkinDirection(normal, float3(0, 1, 0)));
-    if (!isfinite(determinant) || abs(determinant) < 1e-20)
-        return fallback;
-    return SkinDirection((x * normal.x + y * normal.y + z * normal.z) / determinant, fallback);
+    float3 result = fallback;
+    if (isfinite(determinant) && abs(determinant) >= 1e-20)
+        result = SkinDirection((x * normal.x + y * normal.y + z * normal.z) / determinant, fallback);
+    return result;
 }
 
 float3 SkinTangent(Affine m, float3 tangent, float3 normal)

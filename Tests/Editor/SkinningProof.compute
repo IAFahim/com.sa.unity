@@ -11,9 +11,9 @@ RWStructuredBuffer<float4> _TestOutput;
 [numthreads(1, 1, 1)]
 void CheckVertex(uint3 id : SV_DispatchThreadID)
 {
-    float3 position;
-    float3 normal;
-    float3 tangent;
+    float3 position = 0;
+    float3 normal = 0;
+    float3 tangent = 0;
     Skin_float(_TestSkin.xy, 0, _TestPosition.xyz, _TestNormal.xyz, _TestTangent.xyz, position, normal, tangent);
     _TestOutput[0] = float4(position, 1);
     _TestOutput[1] = float4(normal, 0);
