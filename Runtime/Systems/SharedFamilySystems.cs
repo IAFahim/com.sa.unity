@@ -37,6 +37,35 @@ namespace SA
         {
             clock.Paused = paused ? (byte)1 : (byte)0;
         }
+        public static void ResolveDestinationVelocity(ReadOnlySpan<Pose> previous, ReadOnlySpan<Pose> current, double gapSeconds, float transitionSeconds, bool hasPrevious, bool seek, float maxHistoryGapSeconds, Span<PoseVelocity> incoming)
+        {
+            for (var i = 0; i < incoming.Length; i++)
+                incoming[i] = default;
+            if (seek)
+                return;
+            if (!hasPrevious)
+                return;
+            if (previous.Length < current.Length)
+                return;
+            if (incoming.Length < current.Length)
+                return;
+            if (!(transitionSeconds > Scalar.DurationEpsilon))
+                return;
+            if (!(gapSeconds > 0.0))
+                return;
+            if (gapSeconds > maxHistoryGapSeconds)
+                return;
+            var interval = (float)gapSeconds;
+            if (!(interval > Scalar.DurationEpsilon))
+                return;
+            for (var i = 0; i < current.Length; i++)
+            {
+                if (PoseVelocity.TryBetween(previous[i], current[i], interval, out var velocity))
+                    incoming[i] = velocity;
+                else
+                    incoming[i] = default;
+            }
+        }
     }
 
     [UpdateInGroup(typeof(AnimationSystemGroup))]
@@ -57,6 +86,9 @@ namespace SA
             public LayerInput[] PreviousLayers = new LayerInput[SharedFamilyControl.MaxContributions];
             public Pose[] Committed = Array.Empty<Pose>();
             public Pose[] PoseScratch = Array.Empty<Pose>();
+            public Pose[] PreviousDestination = Array.Empty<Pose>();
+            public double PreviousSeconds;
+            public bool HasPreviousDestination;
             public BlobAssetReference<SharedRetargetData> TableRef;
             public RetargetBinding Binding;
             public RetargetRow[] Rows = Array.Empty<RetargetRow>();
@@ -75,7 +107,7 @@ namespace SA
         NativeArray<RigidPose> targetModel;
         NativeArray<Pose> familyReference;
         NativeArray<int> canonicalParents;
-        NativeArray<PoseVelocity> zeroVelocity;
+        NativeArray<PoseVelocity> incomingVelocity;
         NativeArray<Pose> emptyPose;
         NativeArray<float> emptyMask;
 
@@ -97,7 +129,7 @@ namespace SA
             targetModel = new NativeArray<RigidPose>(MaxRigBones, Allocator.Persistent);
             familyReference = new NativeArray<Pose>(CanonicalBones, Allocator.Persistent);
             canonicalParents = new NativeArray<int>(CanonicalBones, Allocator.Persistent);
-            zeroVelocity = new NativeArray<PoseVelocity>(MaxRigBones, Allocator.Persistent);
+            incomingVelocity = new NativeArray<PoseVelocity>(MaxRigBones, Allocator.Persistent);
             emptyPose = new NativeArray<Pose>(0, Allocator.Persistent);
             emptyMask = new NativeArray<float>(0, Allocator.Persistent);
             CanonicalHumanoid.WriteReference(canonicalParents.AsSpan(), familyReference.AsSpan());
@@ -112,7 +144,7 @@ namespace SA
             targetModel.Dispose();
             familyReference.Dispose();
             canonicalParents.Dispose();
-            zeroVelocity.Dispose();
+            incomingVelocity.Dispose();
             emptyPose.Dispose();
             emptyMask.Dispose();
             states.Clear();
@@ -201,6 +233,9 @@ namespace SA
                 state.BoneScratch = new BoneFrameState[boneCount];
                 state.Committed = new Pose[boneCount];
                 state.PoseScratch = new Pose[boneCount];
+                state.PreviousDestination = new Pose[boneCount];
+                state.PreviousSeconds = 0.0;
+                state.HasPreviousDestination = false;
                 states[entity] = state;
             }
             if (!state.TableRef.Equals(tableReference) || state.Rows.Length == 0)
@@ -218,6 +253,7 @@ namespace SA
                 }
                 state.TableRef = tableReference;
                 state.Frame = default;
+                state.HasPreviousDestination = false;
             }
             var clips = EntityManager.GetBuffer<SharedClipAsset>(entity);
             var contributions = EntityManager.GetBuffer<SharedContribution>(entity);
@@ -325,13 +361,30 @@ namespace SA
                     return;
                 }
             }
-            if (!SameMembers(ordered.Slice(0, active), state, active))
+            var membershipChanged = !SameMembers(ordered.Slice(0, active), state, active);
+            if (membershipChanged)
                 clock.Continuity++;
             var frame = new AnimationFrame(clock.Tick, 0, clock.Continuity, clock.Seconds, advance, clock.Transition,
                 seek ? FrameMode.Seek : FrameMode.Advance, 0.1f);
+            var incoming = incomingVelocity.GetSubArray(0, boneCount).AsSpan();
+            SharedFamilyControl.ResolveDestinationVelocity(
+                state.HasPreviousDestination ? new ReadOnlySpan<Pose>(state.PreviousDestination) : ReadOnlySpan<Pose>.Empty,
+                destination,
+                state.HasPreviousDestination ? clock.Seconds - state.PreviousSeconds : 0.0,
+                frame.TransitionSeconds,
+                state.HasPreviousDestination && !membershipChanged && state.PreviousDestination.Length == boneCount,
+                seek,
+                frame.MaxHistoryGapSeconds,
+                incoming);
             var smooth = TimelinePose.Evaluate(frame, ordered.Slice(0, active), layers.Slice(0, layerCount), true, destination,
-                zeroVelocity.GetSubArray(0, boneCount).AsSpan(), ref state.Frame, state.Bones, state.BoneScratch,
+                incoming, ref state.Frame, state.Bones, state.BoneScratch,
                 state.PreviousContributions, state.PreviousLayers, state.Committed, state.PoseScratch, out var action);
+            if (state.PreviousDestination.Length != boneCount)
+                state.PreviousDestination = new Pose[boneCount];
+            for (var b = 0; b < boneCount; b++)
+                state.PreviousDestination[b] = destination[b];
+            state.PreviousSeconds = clock.Seconds;
+            state.HasPreviousDestination = true;
             LastActive = active;
             LastAction = action.ToString();
             LastSmooth = smooth.ToString();
