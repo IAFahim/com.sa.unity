@@ -16,7 +16,8 @@
     "overrideReferences": true,
     "precompiledReferences": [
         "SA.Motion.dll",
-        "SA.Animation.dll"
+        "SA.Animation.dll",
+        "SA.Animation.Content.dll"
     ],
     "autoReferenced": true,
     "defineConstraints": [],

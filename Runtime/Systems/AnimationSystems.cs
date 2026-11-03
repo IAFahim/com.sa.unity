@@ -19,6 +19,7 @@ namespace SA
             state.Dependency = new StepJob { DeltaTime = SystemAPI.Time.DeltaTime }.ScheduleParallel(state.Dependency);
 
         [BurstCompile]
+        [WithNone(typeof(SharedTimeline))]
         partial struct StepJob : IJobEntity
         {
             public float DeltaTime;
@@ -58,7 +59,7 @@ namespace SA
 
         [BurstCompile]
         [WithAll(typeof(CpuEngine))]
-        [WithNone(typeof(TransitionIntent))]
+        [WithNone(typeof(SharedTimeline), typeof(TransitionIntent))]
         partial struct PoseJob : IJobEntity
         {
             [NativeDisableParallelForRestriction] public ComponentLookup<LocalTransform> Transforms;
@@ -85,6 +86,7 @@ namespace SA
 
         [BurstCompile]
         [WithAll(typeof(CpuEngine))]
+        [WithNone(typeof(SharedTimeline))]
         partial struct InertialPoseJob : IJobEntity
         {
             public float DeltaTime;

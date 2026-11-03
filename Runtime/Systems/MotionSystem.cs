@@ -140,6 +140,7 @@ namespace SA
             }.ScheduleParallel(state.Dependency);
 
         [BurstCompile]
+        [WithNone(typeof(SharedTimeline))]
         partial struct DriveJob : IJobEntity
         {
             [ReadOnly] public ComponentLookup<SingleMotion> Singles;

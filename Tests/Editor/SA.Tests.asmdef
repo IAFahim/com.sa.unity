@@ -24,7 +24,8 @@
     "overrideReferences": true,
     "precompiledReferences": [
         "nunit.framework.dll",
-        "SA.Motion.dll"
+        "SA.Motion.dll",
+        "SA.Animation.dll"
     ],
     "autoReferenced": false,
     "defineConstraints": [
