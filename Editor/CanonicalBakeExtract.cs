@@ -18,8 +18,20 @@ namespace SA.Editor
 
         const string Ual1Path = "Assets/UAL/UAL1_Standard.fbx";
         const string Ual2Path = "Assets/UAL/UAL2_Standard.fbx";
-        const string KyleModelPath = "Assets/Samples/Rukhanka Animation System 2/2.10.0/Rukhanka Animation Samples/SampleAssets/Robot Kyle/Model/Robot Kyle.fbx";
-        const string KyleAnimDir = "Assets/Samples/Rukhanka Animation System 2/2.10.0/Rukhanka Animation Samples/SampleAssets/Robot Kyle/Animations/";
+        static readonly string[] KyleAnimNames = { "Idle.anim", "Kyle_Walk.anim", "Kyle_Run.anim", "Kyle_Sprint.anim" };
+
+        static string FindSampleAssetPath(string fileName)
+        {
+            foreach (var guid in AssetDatabase.FindAssets(System.IO.Path.GetFileNameWithoutExtension(fileName)))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (path.EndsWith("/" + fileName, StringComparison.Ordinal))
+                {
+                    return path;
+                }
+            }
+            return "";
+        }
 
         sealed class SliceEntry
         {
@@ -114,7 +126,7 @@ namespace SA.Editor
             if (clips.Length == 0 && models.Length == 0)
                 return DefaultSlice();
             var entries = new List<SliceEntry>();
-            var fallbackRig = models.Length > 0 ? AssetDatabase.GetAssetPath(models[0]) : KyleModelPath;
+            var fallbackRig = models.Length > 0 ? AssetDatabase.GetAssetPath(models[0]) : FindSampleAssetPath("Robot Kyle.fbx");
             foreach (var clip in clips)
             {
                 var path = AssetDatabase.GetAssetPath(clip);
@@ -160,7 +172,24 @@ namespace SA.Editor
             var entries = new List<SliceEntry>();
             AddTakes(entries, Ual1Path, new[] { "Idle_Loop", "Walk_Loop", "Sprint_Loop", "Jump_Start" });
             AddTakes(entries, Ual2Path, new[] { "Idle_Rail_Loop", "Walk_Carry_Loop", "Zombie_Walk_Fwd_Loop", "NinjaJump_Start" });
-            AddAnims(entries, KyleModelPath, new[] { KyleAnimDir + "Idle.anim", KyleAnimDir + "Kyle_Walk.anim", KyleAnimDir + "Kyle_Run.anim", KyleAnimDir + "Kyle_Sprint.anim" });
+            var kyleModel = FindSampleAssetPath("Robot Kyle.fbx");
+            if (string.IsNullOrEmpty(kyleModel))
+            {
+                Debug.LogWarning("SA: Robot Kyle.fbx was not found by name. Fix: restore the Robot Kyle sample model, then run " + NextControl + " again.");
+                return entries;
+            }
+            var anims = new List<string>();
+            foreach (var anim in KyleAnimNames)
+            {
+                var found = FindSampleAssetPath(anim);
+                if (string.IsNullOrEmpty(found))
+                {
+                    Debug.LogWarning("SA: " + anim + " was not found by name. Fix: restore the Robot Kyle sample animations, then run " + NextControl + " again.");
+                    continue;
+                }
+                anims.Add(found);
+            }
+            AddAnims(entries, kyleModel, anims.ToArray());
             return entries;
         }
 
