@@ -61,13 +61,13 @@ namespace SA.Tests
             var builder = new BlobBuilder(Allocator.Temp);
             ref var skin = ref builder.ConstructRoot<SkinBlob>();
             skin.Id = new Hash128(8, 8, 8, 8);
-            skin.MeshFromRig = GpuFrame.Identity;
+            skin.MeshFromRig = PoseAlgebra.Affine(GpuFrame.Identity);
             var bones = builder.Allocate(ref skin.Bones, Bones);
             var bindposes = builder.Allocate(ref skin.Bindposes, Bones);
             for (var b = 0; b < Bones; b++)
             {
                 bones[b] = b;
-                bindposes[b] = GpuFrame.Identity;
+                bindposes[b] = PoseAlgebra.Affine(GpuFrame.Identity);
             }
             builder.Allocate(ref skin.Influences, 1);
             var result = builder.CreateBlobAssetReference<SkinBlob>(Allocator.Persistent);
@@ -117,7 +117,7 @@ namespace SA.Tests
                 manager.CompleteAllTrackedJobs();
                 skinning.Update();
                 var cpu = (float)timer.Elapsed.TotalMilliseconds;
-                var readback = new float3x4[1];
+                var readback = new float4x4[1];
                 skinning.SkinMatrixBuffer.GetData(readback, 0, 1, 1);
                 var total = (float)timer.Elapsed.TotalMilliseconds;
                 if (frame >= 60)

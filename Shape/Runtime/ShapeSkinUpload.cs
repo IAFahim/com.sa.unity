@@ -43,14 +43,14 @@ namespace SA.Shape.Unity
             return true;
         }
 
-        public static bool FinishTangent(in Float3x3 normalMatrix, Float3 objectTangent, float handedness,
+        public static bool FinishTangent(in Affine positionMatrix, Float3 objectTangent, float handedness,
             in Float3 normal, out Float3 tangent, out float outHandedness)
         {
             tangent = default;
             outHandedness = handedness;
             if (!objectTangent.IsFinite || !normal.IsFinite || (handedness != 1f && handedness != -1f))
                 return false;
-            var candidate = normalMatrix.Multiply(objectTangent);
+            var candidate = positionMatrix.C0 * objectTangent.X + positionMatrix.C1 * objectTangent.Y + positionMatrix.C2 * objectTangent.Z;
             if (!candidate.IsFinite)
                 return false;
             candidate -= normal * Float3.Dot(normal, candidate);

@@ -13,6 +13,7 @@ namespace SA.Shape.Unity
 {
     [UpdateInGroup(typeof(PresentationSystemGroup))]
     [UpdateAfter(typeof(SharedFamilyPaletteSystem))]
+    [UpdateBefore(typeof(global::Unity.Rendering.EntitiesGraphicsSystem))]
     public partial class ShapeSkinPaletteSystem : SystemBase
     {
         const int MaxBones = 512;

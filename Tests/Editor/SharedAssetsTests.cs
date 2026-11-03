@@ -345,11 +345,11 @@ namespace SA.Tests
                 GpuFrame.Motion(ref rig.Clips[0].Value.Value, first[0], sampleBase, maskBase),
                 GpuFrame.Motion(ref reordered[1].Value.Value, second[0], sampleBase, maskBase)
             }, Allocator.Temp);
-            using var cpuPoses = new NativeArray<float3x4>(0, Allocator.Temp);
+            using var cpuPoses = new NativeArray<float4x4>(0, Allocator.Temp);
             using var skinJobs = new NativeArray<GpuSkinJob>(0, Allocator.Temp);
             Assert.AreEqual(motions[0].SampleBase, motions[1].SampleBase);
             pipeline.Execute(instances, motions, cpuPoses, 4, skinJobs, 1);
-            var result = new float3x4[4];
+            var result = new float4x4[4];
             pipeline.Poses.Buffer.GetData(result);
             var aRoot = PoseAlgebra.Affine(Evaluation.Bone(ref rig.Value, rig.Clips, rig.Masks, TestRigs.View(first), 0));
             var bRoot = PoseAlgebra.Affine(Evaluation.Bone(ref rig.Value, reordered, rig.Masks, TestRigs.View(second), 0));
@@ -369,9 +369,9 @@ namespace SA.Tests
             using var skinBuilder = new BlobBuilder(Allocator.Temp);
             ref var skinRoot = ref skinBuilder.ConstructRoot<SkinBlob>();
             skinRoot.Id = new Hash128(60, 1, 1, 1);
-            skinRoot.MeshFromRig = GpuFrame.Identity;
+            skinRoot.MeshFromRig = PoseAlgebra.Affine(GpuFrame.Identity);
             skinBuilder.Allocate(ref skinRoot.Bones, 1)[0] = 1;
-            skinBuilder.Allocate(ref skinRoot.Bindposes, 1)[0] = GpuFrame.Identity;
+            skinBuilder.Allocate(ref skinRoot.Bindposes, 1)[0] = PoseAlgebra.Affine(GpuFrame.Identity);
             skinBuilder.Allocate(ref skinRoot.Influences, 0);
             using var skin = skinBuilder.CreateBlobAssetReference<SkinBlob>(Allocator.Persistent);
             using var maskBuilder = new BlobBuilder(Allocator.Temp);
@@ -432,14 +432,17 @@ namespace SA.Tests
             var states = manager.GetBuffer<ClipState>(entity, true).AsNativeArray().AsReadOnlySpan();
             var root = PoseAlgebra.Affine(Evaluation.Bone(ref rig.Value, clips, masks, states, 0));
             var expected = PoseAlgebra.Mul(root, PoseAlgebra.Affine(Evaluation.Bone(ref rig.Value, clips, masks, states, 1)));
-            var result = new float3x4[1];
+            var result = new float4x4[1];
             var binding = manager.GetComponentData<SkinBinding>(skin);
             Assert.Greater(binding.MatrixBase, 0u);
             system.SkinMatrixBuffer.GetData(result, 0, (int)binding.MatrixBase, 1);
             AssertMatrix(expected, result[0]);
         }
 
-        static void AssertMatrix(float3x4 expected, float3x4 actual) =>
-            Assert.Less(math.cmax(math.abs(expected.c0 - actual.c0)) + math.cmax(math.abs(expected.c1 - actual.c1)) + math.cmax(math.abs(expected.c2 - actual.c2)) + math.cmax(math.abs(expected.c3 - actual.c3)), 1e-4f);
+        static void AssertMatrix(float3x4 expected, float4x4 actual)
+        {
+            var packed = GpuFrame.Pack(expected);
+            Assert.Less(math.cmax(math.abs(packed.c0 - actual.c0)) + math.cmax(math.abs(packed.c1 - actual.c1)) + math.cmax(math.abs(packed.c2 - actual.c2)) + math.cmax(math.abs(packed.c3 - actual.c3)), 1e-4f);
+        }
     }
 }

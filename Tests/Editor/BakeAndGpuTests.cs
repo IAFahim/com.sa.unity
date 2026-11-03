@@ -162,7 +162,7 @@ namespace SA.Tests
             skinBones[1] = 0;
             var bindposes = skinBuilder.Allocate(ref skinRoot.Bindposes, 2);
             bindposes[0] = PoseAlgebra.Affine(TestRigs.Pose(-1f, quaternion.RotateX(0.5f)));
-            bindposes[1] = GpuFrame.Identity;
+            bindposes[1] = PoseAlgebra.Affine(GpuFrame.Identity);
             skinBuilder.Allocate(ref skinRoot.Influences, 1);
             var skin = skinBuilder.CreateBlobAssetReference<SkinBlob>(Allocator.Persistent);
             skinBuilder.Dispose();
@@ -186,9 +186,9 @@ namespace SA.Tests
                 instances[0] = new GpuInstance { BoneBase = (uint)record.BoneBase, BoneCount = 2, PoseBase = 0, MotionBase = 0, MotionCount = (uint)motions.Length };
                 var jobs = new NativeArray<GpuSkinJob>(1, Allocator.Temp);
                 jobs[0] = new GpuSkinJob { Skin = 0, PoseBase = 0, OutputBase = 1 };
-                pipeline.Execute(instances, motions.AsArray(), new NativeArray<float3x4>(0, Allocator.Temp), 2, jobs, 3);
-                var poses = new float3x4[2];
-                var matrices = new float3x4[3];
+                pipeline.Execute(instances, motions.AsArray(), new NativeArray<float4x4>(0, Allocator.Temp), 2, jobs, 3);
+                var poses = new float4x4[2];
+                var matrices = new float4x4[3];
                 pipeline.Poses.Buffer.GetData(poses, 0, 0, 2);
                 pipeline.SkinMatrices.Buffer.GetData(matrices, 0, 0, 3);
 
@@ -209,9 +209,10 @@ namespace SA.Tests
             }
         }
 
-        static void AssertNear(float3x4 expected, float3x4 actual)
+        static void AssertNear(float3x4 expected, float4x4 actual)
         {
-            var error = math.cmax(math.abs(expected.c0 - actual.c0)) + math.cmax(math.abs(expected.c1 - actual.c1)) + math.cmax(math.abs(expected.c2 - actual.c2)) + math.cmax(math.abs(expected.c3 - actual.c3));
+            var packed = GpuFrame.Pack(expected);
+            var error = math.cmax(math.abs(packed.c0 - actual.c0)) + math.cmax(math.abs(packed.c1 - actual.c1)) + math.cmax(math.abs(packed.c2 - actual.c2)) + math.cmax(math.abs(packed.c3 - actual.c3));
             Assert.Less(error, 1e-4f, $"expected {expected} got {actual}");
         }
 

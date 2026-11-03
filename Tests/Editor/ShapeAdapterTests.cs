@@ -806,12 +806,12 @@ namespace SA.Tests
             Assert.AreEqual(AnimationError.UnsupportedScale,
                 ShapeSkinUpload.BlendVertex(palette, influences, new[] { 0.5f, 0.5f }, out _, out _));
             Assert.AreEqual(AnimationError.None,
-                ShapeSkinUpload.BlendVertex(palette, influences, new[] { 0.75f, 0.25f }, out _, out var normal));
+                ShapeSkinUpload.BlendVertex(palette, influences, new[] { 0.75f, 0.25f }, out var position, out var normal));
             Assert.IsTrue(ShapeSkinUpload.FinishNormal(normal, new Float3(0f, 1f, 0f), out var up));
             Assert.AreEqual(0f, up.X, 1e-5f);
             Assert.AreEqual(1f, up.Y, 1e-5f);
             Assert.AreEqual(0f, up.Z, 1e-5f);
-            Assert.IsTrue(ShapeSkinUpload.FinishTangent(normal, new Float3(1f, 0f, 0f), 1f, up, out var tangent, out var handedness));
+            Assert.IsTrue(ShapeSkinUpload.FinishTangent(position, new Float3(1f, 0f, 0f), 1f, up, out var tangent, out var handedness));
             Assert.AreEqual(1f, handedness);
             Assert.AreEqual(0f, Float3.Dot(up, tangent), 1e-5f);
         }

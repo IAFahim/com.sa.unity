@@ -179,7 +179,7 @@ namespace SA.Editor
                 return 0;
             var right = new HashSet<string>(CoreTokens(bone), StringComparer.OrdinalIgnoreCase);
             var shared = 0;
-            foreach (var token in CoreTokens(canonical))
+            foreach (var token in CoreTokens(canonical, true))
                 if (right.Contains(token))
                     shared++;
             if (shared == 0)
@@ -217,7 +217,7 @@ namespace SA.Editor
             return text;
         }
 
-        static List<string> CoreTokens(string text)
+        static List<string> CoreTokens(string text, bool canonical = false)
         {
             text = StripNumberedMirrorSuffix(text);
             var flat = new System.Text.StringBuilder();
@@ -244,7 +244,7 @@ namespace SA.Editor
             foreach (var token in raw)
             {
                 var word = token.ToLowerInvariant();
-                var mapped = Alias(word, finger);
+                var mapped = canonical && word == "shoulder" ? "shoulder" : Alias(word, finger);
                 if (string.IsNullOrEmpty(mapped))
                     continue;
                 foreach (var piece in mapped.Split(' '))

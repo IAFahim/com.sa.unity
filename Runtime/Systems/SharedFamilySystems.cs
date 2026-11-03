@@ -426,6 +426,7 @@ namespace SA
 
     [UpdateInGroup(typeof(PresentationSystemGroup))]
     [UpdateAfter(typeof(SkinningSystem))]
+    [UpdateBefore(typeof(global::Unity.Rendering.EntitiesGraphicsSystem))]
     public partial class SharedFamilyPaletteSystem : SystemBase
     {
         const int MaxBones = 512;
