@@ -1,7 +1,11 @@
 Gotchas
 =======
 
-How to drive the Editor from a shell, and the Unity Physics findings, are in `/home/i/GitHub/sa-motion/AGENTS.md` (sections "Controlling Unity from a shell" and "Findings so far").
+How to drive the Editor from a shell, and the measured Unity findings, are in the current `sa-motion` checkout's `AGENTS.md` (sections "Controlling Unity from a shell" and "Findings so far"). The maintained copy is [sa-motion main](https://github.com/IAFahim/sa-motion/blob/main/AGENTS.md); do not assume an old local packet branch contains the latest instructions.
+
+Before Unity work, load the official `unity-cli` skill (`unity skill show` if unavailable in your client) and the SA companion in `sa-motion/.claude/skills/sa-unity-cli/SKILL.md`. Its `references/rig-coverage.md` maps existing SA and read-only Rukhanka rig/clip/skin paths. Its `references/shape-rendering.md` records the matrix, Vulkan, normal/tangent and package failures fixed in SH5. These are also linked from [the maintained companion](https://github.com/IAFahim/sa-motion/blob/main/.claude/skills/sa-unity-cli/SKILL.md).
+
+Fetch this repository and sa-motion, read the current issue comments, and identify the actual package source/commit before editing. Pass `SA_PROJECT` to the shared `eng/unity.sh` wrapper for compile/test/eval, and `--project-path` for other direct Editor commands. Do not launch a second Editor for a package worktree.
 
 1. A MonoBehaviour must live in a file with its own name. Otherwise it saves as a missing script and silently vanishes from prefabs.
 2. Bakers write only their own entity. Use `[TemporaryBakingType]` buffers and a baking system for other entities.
@@ -12,3 +16,6 @@ How to drive the Editor from a shell, and the Unity Physics findings, are in `/h
 7. HLSL does not allow structs in `?:`. Use `if`.
 8. An unfocused Editor throttles Play mode to about 1 frame per second. Measure with the explicit `Benchmarks` tests, not Play mode.
 9. Build it for a person: see the section of that name in the same file. Do the person's walk before you say done, leave no probe in a scene, and add no hidden switch.
+10. CPU/blob affines are 48-byte 3 x 4 matrices; GPU palettes and readbacks are 64-byte `float4x4`. Keep the startup and Edit-mode fallback buffer bindings valid on Vulkan. Shape palettes upload after SkinningSystem and before EntitiesGraphicsSystem; preserve the shaped rig's NoSkin guard.
+11. Resolve filesystem paths for Git UPM packages through `PackageInfo.resolvedPath`, not an assumed physical Packages directory. Never patch Library/PackageCache. Update the source repository and pinned dependency.
+12. Compact means ECS timeline scheduling without Animator state machines/parameters. Preserve ordinary Humanoid/Generic playback, extra bones, masks, root motion and multiple skins/materials. Shared-family retargeting and runtime proportions have additional validation gates; one working rig does not establish every rig or a player build.
