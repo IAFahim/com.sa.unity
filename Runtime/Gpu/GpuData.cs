@@ -31,13 +31,13 @@ namespace SA
     internal struct GpuSkin
     {
         public uint SkinBoneBase, SkinBoneCount;
-        public float3x4 MeshFromRig;
+        public float4x4 MeshFromRig;
     }
 
     internal struct GpuSkinBone
     {
         public uint Bone;
-        public float3x4 Bindpose;
+        public float4x4 Bindpose;
     }
 
     internal struct GpuSkinJob
@@ -54,7 +54,9 @@ namespace SA
     {
         public const uint NoSkin = uint.MaxValue;
 
-        public static float3x4 Identity => new float3x4(new float3(1f, 0f, 0f), new float3(0f, 1f, 0f), new float3(0f, 0f, 1f), float3.zero);
+        public static float4x4 Identity => new float4x4(new float4(1f, 0f, 0f, 0f), new float4(0f, 1f, 0f, 0f), new float4(0f, 0f, 1f, 0f), new float4(0f, 0f, 0f, 1f));
+
+        public static float4x4 Pack(float3x4 m) => new float4x4(new float4(m.c0, 0f), new float4(m.c1, 0f), new float4(m.c2, 0f), new float4(m.c3, 1f));
 
         public static GpuMotion Motion(ref Clip clip, in ClipState state, int sampleBase, int maskBase)
         {
@@ -167,9 +169,9 @@ namespace SA
             if (Skins.ContainsKey(skin.Id))
                 return;
             Skins.Add(skin.Id, new int2(SkinTable.Length, Influences.Length));
-            SkinTable.Add(new GpuSkin { SkinBoneBase = (uint)SkinBones.Length, SkinBoneCount = (uint)skin.Bones.Length, MeshFromRig = skin.MeshFromRig });
+            SkinTable.Add(new GpuSkin { SkinBoneBase = (uint)SkinBones.Length, SkinBoneCount = (uint)skin.Bones.Length, MeshFromRig = GpuFrame.Pack(skin.MeshFromRig) });
             for (var k = 0; k < skin.Bones.Length; k++)
-                SkinBones.Add(new GpuSkinBone { Bone = (uint)skin.Bones[k], Bindpose = skin.Bindposes[k] });
+                SkinBones.Add(new GpuSkinBone { Bone = (uint)skin.Bones[k], Bindpose = GpuFrame.Pack(skin.Bindposes[k]) });
             for (var v = 0; v < skin.Influences.Length; v++)
                 Influences.Add(skin.Influences[v]);
         }
@@ -225,9 +227,9 @@ namespace SA
         public readonly GpuRegistry Registry = new GpuRegistry();
         public readonly GpuArray<GpuInstance> Instances = new GpuArray<GpuInstance>();
         public readonly GpuArray<GpuMotion> Motions = new GpuArray<GpuMotion>();
-        public readonly GpuArray<float3x4> Poses = new GpuArray<float3x4>();
+        public readonly GpuArray<float4x4> Poses = new GpuArray<float4x4>();
         public readonly GpuArray<GpuSkinJob> SkinJobs = new GpuArray<GpuSkinJob>();
-        public readonly GpuArray<float3x4> SkinMatrices = new GpuArray<float3x4>();
+        public readonly GpuArray<float4x4> SkinMatrices = new GpuArray<float4x4>();
         readonly CommandBuffer commands = new CommandBuffer { name = "SA" };
         readonly ComputeShader shader = Resources.Load<ComputeShader>("SA/Animation");
         readonly int evaluateKernel;
@@ -239,7 +241,7 @@ namespace SA
             skinKernel = shader.FindKernel("Skin");
         }
 
-        public void Execute(NativeArray<GpuInstance> instances, NativeArray<GpuMotion> motions, NativeArray<float3x4> cpuPoses, int gpuPoseCount, NativeArray<GpuSkinJob> skinJobs, int skinMatrixCount)
+        public void Execute(NativeArray<GpuInstance> instances, NativeArray<GpuMotion> motions, NativeArray<float4x4> cpuPoses, int gpuPoseCount, NativeArray<GpuSkinJob> skinJobs, int skinMatrixCount)
         {
             commands.Clear();
             Registry.Sync(commands);

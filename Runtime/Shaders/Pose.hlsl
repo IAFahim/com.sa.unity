@@ -10,10 +10,10 @@ struct BonePose
 
 struct Affine
 {
-    float3 C0;
-    float3 C1;
-    float3 C2;
-    float3 C3;
+    float4 C0;
+    float4 C1;
+    float4 C2;
+    float4 C3;
 };
 
 float4 AlignRotation(float4 q, float4 reference)
@@ -77,31 +77,30 @@ Affine AffineFromPose(BonePose pose)
     float xy = q.x * y2, xz = q.x * z2, yz = q.y * z2;
     float wx = q.w * x2, wy = q.w * y2, wz = q.w * z2;
     Affine result;
-    result.C0 = float3(1 - yy - zz, xy + wz, xz - wy) * pose.Scale.x;
-    result.C1 = float3(xy - wz, 1 - xx - zz, yz + wx) * pose.Scale.y;
-    result.C2 = float3(xz + wy, yz - wx, 1 - xx - yy) * pose.Scale.z;
-    result.C3 = pose.Position;
+    result.C0 = float4(1 - yy - zz, xy + wz, xz - wy, 0) * pose.Scale.x;
+    result.C1 = float4(xy - wz, 1 - xx - zz, yz + wx, 0) * pose.Scale.y;
+    result.C2 = float4(xz + wy, yz - wx, 1 - xx - yy, 0) * pose.Scale.z;
+    result.C3 = float4(pose.Position, 1);
     return result;
 }
 
 float3 TransformVector(Affine m, float3 v)
 {
-    return m.C0 * v.x + m.C1 * v.y + m.C2 * v.z;
+    return m.C0.xyz * v.x + m.C1.xyz * v.y + m.C2.xyz * v.z;
 }
 
 float3 TransformPoint(Affine m, float3 p)
 {
-    return TransformVector(m, p) + m.C3;
+    return TransformVector(m, p) + m.C3.xyz;
 }
 
 Affine MulAffine(Affine a, Affine b)
 {
     Affine result;
-    result.C0 = TransformVector(a, b.C0);
-    result.C1 = TransformVector(a, b.C1);
-    result.C2 = TransformVector(a, b.C2);
-    result.C3 = TransformPoint(a, b.C3);
+    result.C0 = float4(TransformVector(a, b.C0.xyz), 0);
+    result.C1 = float4(TransformVector(a, b.C1.xyz), 0);
+    result.C2 = float4(TransformVector(a, b.C2.xyz), 0);
+    result.C3 = float4(TransformPoint(a, b.C3.xyz), 1);
     return result;
 }
-
 #endif

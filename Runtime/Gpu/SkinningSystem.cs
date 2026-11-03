@@ -28,8 +28,9 @@ namespace SA
         EntityQuery changedSkins;
         EntityQuery changedAssets;
         GpuPipeline pipeline;
+        NativeArray<float4x4> identityMatrix;
 
-        internal GraphicsBuffer SkinMatrixBuffer => pipeline?.SkinMatrices.Buffer;
+        public GraphicsBuffer SkinMatrixBuffer => pipeline?.SkinMatrices.Buffer;
         internal GpuRegistry Registry => pipeline?.Registry;
 
         protected override void OnCreate()
@@ -50,9 +51,16 @@ namespace SA
                 return;
             }
             pipeline = new GpuPipeline();
+            identityMatrix = new NativeArray<float4x4>(1, Allocator.Persistent);
+            identityMatrix[0] = GpuFrame.Identity;
         }
 
-        protected override void OnDestroy() => pipeline?.Dispose();
+        protected override void OnDestroy()
+        {
+            if (identityMatrix.IsCreated)
+                identityMatrix.Dispose();
+            pipeline?.Dispose();
+        }
 
         protected override void OnUpdate()
         {
@@ -79,7 +87,7 @@ namespace SA
 
             var instances = new NativeArray<GpuInstance>(totals[0], Allocator.TempJob);
             var motions = new NativeArray<GpuMotion>(totals[2], Allocator.TempJob);
-            var cpuPoses = new NativeArray<float3x4>(totals[3], Allocator.TempJob);
+            var cpuPoses = new NativeArray<float4x4>(totals[3], Allocator.TempJob);
             var skinJobs = new NativeArray<GpuSkinJob>(totals[4], Allocator.TempJob);
             using (FillMarker.Auto())
             {
@@ -108,6 +116,7 @@ namespace SA
                     Skins = GetComponentTypeHandle<Skin>(true),
                     Bindings = GetComponentTypeHandle<SkinBinding>(),
                     Slots = GetComponentLookup<PoseSlot>(true),
+                    Shaped = GetComponentLookup<ShapeDriven>(true),
                     Records = pipeline.Registry.Skins,
                     Bases = skinCounts,
                     Jobs = skinJobs
@@ -117,7 +126,8 @@ namespace SA
 
             using (UploadMarker.Auto())
                 pipeline.Execute(instances, motions, cpuPoses, totals[1], skinJobs, totals[5]);
-
+            if (identityMatrix.IsCreated && pipeline != null && pipeline.SkinMatrices.Buffer != null && pipeline.SkinMatrices.Buffer.count > 0)
+                pipeline.SkinMatrices.Buffer.SetData(identityMatrix, 0, 0, 1);
             instances.Dispose();
             motions.Dispose();
             cpuPoses.Dispose();
@@ -262,7 +272,7 @@ namespace SA
             public int GpuPoseCount;
             [NativeDisableParallelForRestriction] public NativeArray<GpuInstance> Instances;
             [NativeDisableParallelForRestriction] public NativeArray<GpuMotion> Motions;
-            [NativeDisableParallelForRestriction] public NativeArray<float3x4> CpuPoses;
+            [NativeDisableParallelForRestriction] public NativeArray<float4x4> CpuPoses;
 
             public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
             {
@@ -291,7 +301,7 @@ namespace SA
                             {
                                 var bone = hasBones && b < boneEntities[i].Length ? boneEntities[i][b].Value : Entity.Null;
                                 CpuPoses[at.w + b] = BoneWorlds.TryGetComponent(bone, out var world)
-                                    ? PoseAlgebra.Affine(math.mul(rigFromWorld, world.Value))
+                                    ? GpuFrame.Pack(PoseAlgebra.Affine(math.mul(rigFromWorld, world.Value)))
                                     : GpuFrame.Identity;
                             }
                             at.w += boneCount;
@@ -331,6 +341,7 @@ namespace SA
             [ReadOnly] public ComponentTypeHandle<Skin> Skins;
             public ComponentTypeHandle<SkinBinding> Bindings;
             [ReadOnly] public ComponentLookup<PoseSlot> Slots;
+            [ReadOnly] public ComponentLookup<ShapeDriven> Shaped;
             [ReadOnly] public NativeHashMap<Hash128, int2> Records;
             [ReadOnly] public NativeArray<int2> Bases;
             [NativeDisableParallelForRestriction] public NativeArray<GpuSkinJob> Jobs;
@@ -354,6 +365,8 @@ namespace SA
                         {
                             job = new GpuSkinJob { Skin = (uint)record.x, PoseBase = (uint)slot.Base, OutputBase = (uint)at.y };
                             binding = new SkinBinding { MatrixBase = (uint)at.y, InfluenceBase = (uint)record.y };
+                            if (Shaped.HasComponent(skin.Rig))
+                                job.Skin = GpuFrame.NoSkin;
                         }
                         at.y += blob.Bones.Length;
                     }

@@ -196,7 +196,7 @@ namespace SA.Editor
         {
             var lower = name.ToLowerInvariant();
             var left = lower.Contains("left") || lower.EndsWith("_l") || lower.EndsWith("-l") || lower.EndsWith(".l") || lower.EndsWith(" l");
-            var right = lower.Contains("right") || lower.EndsWith("_r") || lower.EndsWith("-r") || lower.EndsWith(".r") || lower.EndsWith(" r");
+            var right = lower.Contains("right") || lower.EndsWith("_r") || lower.EndsWith("-r") || lower.EndsWith(".r") || lower.EndsWith(" r") || HasNumberedMirrorSuffix(lower);
             if (left && !right)
                 return 1;
             if (right && !left)
@@ -204,8 +204,22 @@ namespace SA.Editor
             return 0;
         }
 
+        static bool HasNumberedMirrorSuffix(string lower)
+        {
+            if (!lower.EndsWith("_1"))
+                return false;
+            return lower.Length > 2 && char.IsDigit(lower[lower.Length - 3]);
+        }
+        static string StripNumberedMirrorSuffix(string text)
+        {
+            if (text != null && HasNumberedMirrorSuffix(text.ToLowerInvariant()))
+                return text.Substring(0, text.Length - 2);
+            return text;
+        }
+
         static List<string> CoreTokens(string text)
         {
+            text = StripNumberedMirrorSuffix(text);
             var flat = new System.Text.StringBuilder();
             foreach (var glyph in text)
                 flat.Append(char.IsLetterOrDigit(glyph) ? char.ToLowerInvariant(glyph) : ' ');
@@ -254,7 +268,8 @@ namespace SA.Editor
                 case "ankle": case "foot": return "foot";
                 case "ball": case "toe": case "toes": return "toes";
                 case "clavicle": case "collar": case "collarbone": return "shoulder";
-                case "shoulder": return "shoulder";
+                case "shoulder": return "shoulder upper arm";
+                case "elbow": return "elbow lower arm";
                 case "wrist": case "hand": return "hand";
                 case "neck": return "neck";
                 case "head": case "skull": return "head";
@@ -775,7 +790,42 @@ namespace SA.Editor
                     continue;
                 sourceMap[bone] = r;
             }
+            DropTopologyViolations(skeleton, sourceMap);
             return sourceMap;
+        }
+
+        static void DropTopologyViolations(List<Transform> skeleton, int[] sourceMap)
+        {
+            var count = skeleton.Count;
+            var targetParents = new int[count];
+            for (var b = 0; b < count; b++)
+                targetParents[b] = skeleton.IndexOf(skeleton[b].parent);
+            var canonicalParents = SharedFamilyBake.CanonicalParentsArray();
+            var changed = true;
+            while (changed)
+            {
+                changed = false;
+                for (var b = 1; b < count; b++)
+                {
+                    var source = sourceMap[b];
+                    if (source <= 0)
+                        continue;
+                    var ancestor = targetParents[b];
+                    while (ancestor > 0 && sourceMap[ancestor] < 0)
+                        ancestor = targetParents[ancestor];
+                    var required = sourceMap[ancestor];
+                    if (required < 0)
+                        continue;
+                    var parent = canonicalParents[source];
+                    while (parent > 0 && parent != required)
+                        parent = canonicalParents[parent];
+                    if (parent != required)
+                    {
+                        sourceMap[b] = -1;
+                        changed = true;
+                    }
+                }
+            }
         }
 
         static int BoneOfRole(int[] sourceMap, int bones, int role)

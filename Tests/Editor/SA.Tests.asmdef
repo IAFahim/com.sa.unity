@@ -4,6 +4,8 @@
     "references": [
         "SA.Runtime",
         "SA.Editor",
+        "SA.Shape.Unity",
+        "SA.Shape.Unity.Editor",
         "Unity.Burst",
         "Unity.Collections",
         "Unity.Entities",
@@ -25,7 +27,9 @@
     "precompiledReferences": [
         "nunit.framework.dll",
         "SA.Motion.dll",
-        "SA.Animation.dll"
+        "SA.Animation.dll",
+        "SA.Animation.Content.dll",
+        "SA.Shape.dll"
     ],
     "autoReferenced": false,
     "defineConstraints": [

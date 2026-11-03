@@ -88,7 +88,8 @@ namespace SA
                 ComponentType.ReadOnly<SharedContribution>(),
                 ComponentType.ReadWrite<SharedClock>(),
                 ComponentType.ReadOnly<SharedRetarget>(),
-                ComponentType.ReadOnly<BoneEntity>());
+                ComponentType.ReadOnly<BoneEntity>(),
+                ComponentType.Exclude<ShapeDriven>());
             decoded = new NativeArray<Pose>(SharedFamilyControl.MaxContributions * CanonicalBones, Allocator.Persistent);
             blended = new NativeArray<Pose>(CanonicalBones, Allocator.Persistent);
             retargeted = new NativeArray<Pose>(MaxRigBones, Allocator.Persistent);
@@ -434,7 +435,7 @@ namespace SA
         NativeArray<Affine> affineModel;
         NativeArray<Affine> bindMatrices;
         NativeArray<Affine> palette;
-        NativeArray<float3x4> upload;
+        NativeArray<float4x4> upload;
         NativeArray<Pose> localPose;
         NativeArray<int> parents;
 
@@ -445,7 +446,7 @@ namespace SA
             affineModel = new NativeArray<Affine>(MaxBones, Allocator.Persistent);
             bindMatrices = new NativeArray<Affine>(MaxBones, Allocator.Persistent);
             palette = new NativeArray<Affine>(MaxBones, Allocator.Persistent);
-            upload = new NativeArray<float3x4>(MaxBones, Allocator.Persistent);
+            upload = new NativeArray<float4x4>(MaxBones, Allocator.Persistent);
             localPose = new NativeArray<Pose>(MaxBones, Allocator.Persistent);
             parents = new NativeArray<int>(MaxBones, Allocator.Persistent);
         }
@@ -482,6 +483,8 @@ namespace SA
         {
             var skin = EntityManager.GetComponentData<Skin>(skinEntity);
             if (!skin.Value.IsCreated || !EntityManager.HasComponent<SharedTimeline>(skin.Rig))
+                return true;
+            if (EntityManager.HasComponent<ShapeDriven>(skin.Rig))
                 return true;
             if (!EntityManager.HasBuffer<BoneEntity>(skin.Rig))
                 return true;
@@ -522,7 +525,7 @@ namespace SA
             for (var b = 0; b < boneCount; b++)
             {
                 var joint = palette[b];
-                upload[b] = new float3x4(Conversions.ToUnity(joint.C0), Conversions.ToUnity(joint.C1), Conversions.ToUnity(joint.C2), Conversions.ToUnity(joint.C3));
+                upload[b] = new float4x4(new float4(Conversions.ToUnity(joint.C0), 0f), new float4(Conversions.ToUnity(joint.C1), 0f), new float4(Conversions.ToUnity(joint.C2), 0f), new float4(Conversions.ToUnity(joint.C3), 1f));
             }
             var binding = EntityManager.GetComponentData<SkinBinding>(skinEntity);
             matrices.SetData(upload, 0, (int)binding.MatrixBase, boneCount);

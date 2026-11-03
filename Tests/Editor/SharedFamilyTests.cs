@@ -78,6 +78,13 @@ namespace SA.Tests
             Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftThumbIntermediate", "thumb_02_l"), SharedFamilyBake.ScoreBoneName("LeftThumbIntermediate", "thumb_01_l"));
             Assert.Greater(SharedFamilyBake.ScoreBoneName("Spine", "spine_01"), SharedFamilyBake.ScoreBoneName("Spine", "spine_02"));
             Assert.Greater(SharedFamilyBake.ScoreBoneName("Chest", "spine_02"), SharedFamilyBake.ScoreBoneName("Chest", "spine_01"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftUpperArm", "Shoulder_L"), SharedFamilyBake.ScoreBoneName("LeftShoulder", "Shoulder_L"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftLowerArm", "Elbow_L"), SharedFamilyBake.ScoreBoneName("LeftUpperArm", "Elbow_L"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftShoulder", "Clavicle_L"), 0);
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftFoot", "Ankle_L"), 0);
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("LeftToes", "Toes_L"), 0);
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("RightIndexDistal", "IndexFinger_03_1"), SharedFamilyBake.ScoreBoneName("LeftMiddleDistal", "IndexFinger_03_1"));
+            Assert.Greater(SharedFamilyBake.ScoreBoneName("RightIndexDistal", "IndexFinger_03_1"), SharedFamilyBake.ScoreBoneName("RightIndexDistal", "IndexFinger_04_1"));
         }
 
         [Test]

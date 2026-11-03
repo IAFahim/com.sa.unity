@@ -1,0 +1,33 @@
+{
+    "name": "SA.Shape.Unity.Editor",
+    "rootNamespace": "SA.Shape.Unity.Editor",
+    "references": [
+        "SA.Runtime",
+        "SA.Editor",
+        "SA.Shape.Unity",
+        "Unity.Burst",
+        "Unity.Collections",
+        "Unity.Entities",
+        "Unity.Entities.Hybrid",
+        "Unity.Mathematics",
+        "Unity.Transforms",
+        "Unity.Entities.Graphics",
+        "SA.Motion.Unity"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": true,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "SA.Motion.dll",
+        "SA.Animation.dll",
+        "SA.Animation.Content.dll",
+        "SA.Shape.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

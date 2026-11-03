@@ -4,6 +4,9 @@ using SA.Animation;
 namespace SA
 {
     public struct SharedTimeline : IComponentData { }
+    public struct ShapeDriven : IComponentData
+    {
+    }
 
     public struct SharedRig : IComponentData
     {
