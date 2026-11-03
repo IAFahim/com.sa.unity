@@ -53,6 +53,10 @@ namespace SA
             pipeline = new GpuPipeline();
             identityMatrix = new NativeArray<float4x4>(1, Allocator.Persistent);
             identityMatrix[0] = GpuFrame.Identity;
+            pipeline.SkinMatrices.Buffer.SetData(identityMatrix);
+            pipeline.Registry.InfluenceBuffer.Buffer.SetData(new[] { uint4.zero });
+            Shader.SetGlobalBuffer("_SaSkinMatrices", pipeline.SkinMatrices.Buffer);
+            Shader.SetGlobalBuffer("_SaInfluences", pipeline.Registry.InfluenceBuffer.Buffer);
         }
 
         protected override void OnDestroy()

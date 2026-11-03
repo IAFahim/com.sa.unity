@@ -9,6 +9,21 @@ namespace SA.Tests
 {
     public class SkinningShaderTests
     {
+        [Test]
+        public void SkinningSystemInitializesTheSentinelBeforeAnySkinIsLoaded()
+        {
+            if (!SystemInfo.supportsComputeShaders)
+                Assert.Ignore("compute shaders unavailable");
+            using var world = new global::Unity.Entities.World("SA.ShaderStartup");
+            var system = world.GetOrCreateSystemManaged<SkinningSystem>();
+            var matrices = new float4x4[1];
+            system.SkinMatrixBuffer.GetData(matrices);
+            Assert.AreEqual(float4x4.identity, matrices[0]);
+            var influences = new uint4[1];
+            system.Registry.InfluenceBuffer.Buffer.GetData(influences);
+            Assert.AreEqual(uint4.zero, influences[0]);
+        }
+
         static float4[] Dispatch(float4x4[] palette, uint4 packed, float3 position, float3 normal, float3 tangent, uint matrixBase = 1)
         {
             if (!SystemInfo.supportsComputeShaders)
