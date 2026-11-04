@@ -1,6 +1,7 @@
 Unreleased
 ----------
 
+- Canonical pilot extractor fixes: the extractor prepends a synthetic identity root so animated Bip01/Armature rig roots satisfy the bone-zero contract, samples the Animator motion node with frame-0-relative root tracks so Inplace/Root twins separate, and reapplies per-take loopTime and mask settings from the model meta on import with unit-scale normalization reported per clip.
 - Opt-in inertialized transitions on CPU rigs: `RigAuthoring.Inertialize`, `TransitionPlayback.Play` and `Blend`, `TransitionIntent`, `BoneTransition`. A new request cuts to its destination and decays the offset from the last output; no outgoing clip is kept alive.
 - `SA.Runtime` now references the portable `SA.Motion` library through the `com.sa.motion.unity` package. Add that package to the project manifest.
 - Optional shape addon assembly `SA.Shape.Unity`: per-character proportions from `.sashape` definitions with revisioned parameters, staged Prepare/Commit timeline evaluation and named channel controls. Shaped rigs are driven by the addon system; ordinary characters compile and behave as before. Needs `SA.Shape.dll` from the `com.sa.motion.unity` bridge next to the existing DLLs.

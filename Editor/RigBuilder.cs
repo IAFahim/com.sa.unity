@@ -23,6 +23,18 @@ namespace SA.Editor
             math.max(2, (int)math.ceil(clip.length * sampleRate) + 1);
 
         public static BonePose Local(Transform t) => new BonePose { Position = t.localPosition, Rotation = t.localRotation, Scale = t.localScale };
+        public const string SyntheticRootName = "SA_SyntheticRoot";
+
+        public static bool IsIdentityRoot(Vector3 position, Quaternion rotation)
+        {
+            if (!float.IsFinite(position.x) || !float.IsFinite(position.y) || !float.IsFinite(position.z)
+                || !float.IsFinite(rotation.x) || !float.IsFinite(rotation.y) || !float.IsFinite(rotation.z) || !float.IsFinite(rotation.w))
+                return false;
+            var lengthSquared = rotation.x * rotation.x + rotation.y * rotation.y + rotation.z * rotation.z + rotation.w * rotation.w;
+            if (Math.Abs(lengthSquared - 1f) > 1e-3f || Math.Abs(rotation.w) < 0.999999f)
+                return false;
+            return position.sqrMagnitude <= 1e-12f;
+        }
 
         public static float3x4 Affine(Matrix4x4 m) =>
             new float3x4(new float3(m.m00, m.m10, m.m20), new float3(m.m01, m.m11, m.m21), new float3(m.m02, m.m12, m.m22), new float3(m.m03, m.m13, m.m23));
