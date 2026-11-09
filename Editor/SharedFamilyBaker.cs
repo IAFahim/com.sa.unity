@@ -338,8 +338,22 @@ namespace SA.Editor
 
         public static bool EncodeCanonicalSamples(Pose[] samples, int frames, double duration, bool loop, out byte[] bytes, out string error)
         {
+            var roots = new RigidPose[Math.Max(0, frames)];
+            for (var f = 0; f < roots.Length; f++)
+                roots[f] = RigidPose.Identity;
+            return EncodeCanonicalSamples(samples, frames, duration, loop, RootPolicy.None, roots, Array.Empty<PoseMarker>(), true, out bytes, out error);
+        }
+
+        public static bool EncodeCanonicalSamples(Pose[] samples, int frames, double duration, bool loop, RootPolicy rootPolicy, RigidPose[] roots,
+            PoseMarker[] markers, bool packed, out byte[] bytes, out string error)
+        {
             bytes = Array.Empty<byte>();
             error = string.Empty;
+            if (samples == null || roots == null || markers == null || frames < 2 || roots.Length != frames || samples.Length != frames * CanonicalBones)
+            {
+                error = "expected " + frames + " frames of " + CanonicalBones + " canonical bones with one root each.";
+                return false;
+            }
             var parents = new int[CanonicalBones];
             var reference = new Pose[CanonicalBones];
             if (CanonicalHumanoid.WriteReference(parents, reference) != AnimationError.None)
@@ -353,12 +367,9 @@ namespace SA.Editor
                 return false;
             }
             var family = new AssetId(fa, fb, fc, fd);
-            var roots = new RigidPose[frames];
-            for (var f = 0; f < frames; f++)
-                roots[f] = RigidPose.Identity;
             var encode = SharedClipEncoder.Encode(family, parents, reference, samples, frames, duration, loop,
-                RootPolicy.None, roots, Array.Empty<Pose>(), Array.Empty<float>(), Array.Empty<PoseMarker>(),
-                true, CompressionLimits.Default, out bytes, out _);
+                rootPolicy, roots, Array.Empty<Pose>(), Array.Empty<float>(), markers,
+                packed, CompressionLimits.Default, out bytes, out _);
             if (encode != AnimationError.None)
             {
                 error = "encode failed (" + encode + ").";
@@ -392,8 +403,88 @@ namespace SA.Editor
                         return false;
                     }
                 }
+                if (rootPolicy != RootPolicy.None)
+                {
+                    var stored = clip.Root[pick];
+                    var angle = AngleBetween(roots[pick].Rotation, stored.Rotation);
+                    var distance = Distance(roots[pick].Position, stored.Position);
+                    if (!(angle <= 0.01f) || !(distance <= 0.01f))
+                    {
+                        error = "verify root drift at frame " + pick + " (" + angle + " rad, " + distance + " m).";
+                        return false;
+                    }
+                }
             }
             return true;
+        }
+
+        internal static AnimationError TargetToCanonical(int[] targetParents, Pose[] frameLocal, RigidPose[] frameModel, int[] targetForCanonical,
+            RetargetRow[] rows, in RetargetBinding binding, int targetHips, float heightRatio, int[] canonicalParents, Pose[] canonicalReference,
+            RigidPose[] canonicalModel, Pose[] samples, int offset, out int badBone)
+        {
+            badBone = -1;
+            if (RigidMath.Model(targetParents, frameLocal, frameModel) != AnimationError.None)
+                return AnimationError.InvalidFrame;
+            samples[offset] = Pose.Identity;
+            canonicalModel[0] = RigidPose.Identity;
+            for (var c = 1; c < CanonicalBones; c++)
+            {
+                var t = targetForCanonical[c];
+                Pose local;
+                if (t < 0)
+                {
+                    local = canonicalReference[c];
+                    canonicalModel[c] = Compose(ParentModel(canonicalModel, canonicalParents[c]), local);
+                }
+                else
+                {
+                    ref readonly var row = ref rows[t];
+                    var correction = Quaternion.InverseUnit(Quaternion.Normalize(row.Correction));
+                    Quaternion rotation;
+                    if (row.Mode == RetargetRowMode.FastLocal)
+                    {
+                        var pre = Quaternion.InverseUnit(Quaternion.Normalize(row.PreRotation));
+                        rotation = Quaternion.Normalize(Quaternion.Multiply(Quaternion.Multiply(pre, frameLocal[t].Rotation), correction));
+                    }
+                    else
+                    {
+                        var parentModel = frameModel[targetParents[t]];
+                        rotation = Quaternion.Normalize(Quaternion.Multiply(Quaternion.Multiply(Quaternion.InverseUnit(Quaternion.Normalize(parentModel.Rotation)), frameLocal[t].Rotation), correction));
+                    }
+                    if (c == 1)
+                    {
+                        var desired = binding.SourceHipReference + (frameModel[targetHips].Position - binding.TargetHipReference) * (1f / heightRatio);
+                        var parentModel = ParentModel(canonicalModel, canonicalParents[c]);
+                        var offsetPosition = desired - parentModel.Position;
+                        var inverse = Quaternion.InverseUnit(Quaternion.Normalize(parentModel.Rotation));
+                        local = new Pose { Position = Quaternion.Rotate(inverse, offsetPosition), Rotation = rotation, Scale = Float3.One };
+                        canonicalModel[c] = new RigidPose(desired, rotation);
+                    }
+                    else
+                    {
+                        local = new Pose { Position = canonicalReference[c].Position, Rotation = rotation, Scale = Float3.One };
+                        canonicalModel[c] = Compose(ParentModel(canonicalModel, canonicalParents[c]), local);
+                    }
+                }
+                if (!RigidMath.UnitPose(local))
+                {
+                    badBone = c;
+                    return AnimationError.InvalidFrame;
+                }
+                samples[offset + c] = local;
+            }
+            return AnimationError.None;
+        }
+
+        static RigidPose ParentModel(RigidPose[] canonicalModel, int parent)
+        {
+            return parent < 0 ? RigidPose.Identity : canonicalModel[parent];
+        }
+
+        static RigidPose Compose(in RigidPose parent, in Pose local)
+        {
+            var rotation = Quaternion.Normalize(Quaternion.Multiply(Quaternion.Normalize(parent.Rotation), Quaternion.Normalize(local.Rotation)));
+            return new RigidPose(parent.Position + Quaternion.Rotate(Quaternion.Normalize(parent.Rotation), local.Position), rotation);
         }
 
         public static float AngleBetween(in Quaternion a, in Quaternion b)
@@ -794,7 +885,7 @@ namespace SA.Editor
             return sourceMap;
         }
 
-        static void DropTopologyViolations(List<Transform> skeleton, int[] sourceMap)
+        internal static void DropTopologyViolations(List<Transform> skeleton, int[] sourceMap)
         {
             var count = skeleton.Count;
             var targetParents = new int[count];
@@ -862,59 +953,15 @@ namespace SA.Editor
             {
                 for (var b = 0; b < count; b++)
                     frameLocal[b] = rigFrames[f * count + b];
-                if (RigidMath.Model(plan.TargetParents, frameLocal, frameModel) != AnimationError.None)
-                {
+                var mapped = SharedFamilyBake.TargetToCanonical(plan.TargetParents, frameLocal, frameModel, targetForCanonical, plan.Rows, plan.Binding,
+                    plan.TargetHips, plan.HeightRatio, plan.CanonicalParents, plan.CanonicalReference, canonicalModel, samples, f * SharedFamilyBake.CanonicalBones, out var badBone);
+                if (mapped == AnimationError.None)
+                    continue;
+                if (badBone < 0)
                     Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': frame " + f + " failed to compose. Fix: check the clip for invalid bones, then rebake.", clip);
-                    return false;
-                }
-                samples[f * SharedFamilyBake.CanonicalBones] = Pose.Identity;
-                canonicalModel[0] = RigidPose.Identity;
-                for (var c = 1; c < SharedFamilyBake.CanonicalBones; c++)
-                {
-                    var t = targetForCanonical[c];
-                    Pose local;
-                    if (t < 0)
-                    {
-                        local = plan.CanonicalReference[c];
-                        canonicalModel[c] = Compose(ParentModel(canonicalModel, plan.CanonicalParents[c]), local);
-                    }
-                    else
-                    {
-                        ref readonly var row = ref plan.Rows[t];
-                        var correction = Quaternion.InverseUnit(Quaternion.Normalize(row.Correction));
-                        Quaternion rotation;
-                        if (row.Mode == RetargetRowMode.FastLocal)
-                        {
-                            var pre = Quaternion.InverseUnit(Quaternion.Normalize(row.PreRotation));
-                            rotation = Quaternion.Normalize(Quaternion.Multiply(Quaternion.Multiply(pre, frameLocal[t].Rotation), correction));
-                        }
-                        else
-                        {
-                            var parentModel = frameModel[plan.TargetParents[t]];
-                            rotation = Quaternion.Normalize(Quaternion.Multiply(Quaternion.Multiply(Quaternion.InverseUnit(Quaternion.Normalize(parentModel.Rotation)), frameLocal[t].Rotation), correction));
-                        }
-                        if (c == 1)
-                        {
-                            var desired = plan.Binding.SourceHipReference + (frameModel[plan.TargetHips].Position - plan.Binding.TargetHipReference) * (1f / plan.HeightRatio);
-                            var parentModel = ParentModel(canonicalModel, plan.CanonicalParents[c]);
-                            var offset = desired - parentModel.Position;
-                            var inverse = Quaternion.InverseUnit(Quaternion.Normalize(parentModel.Rotation));
-                            local = new Pose { Position = Quaternion.Rotate(inverse, offset), Rotation = rotation, Scale = Float3.One };
-                            canonicalModel[c] = new RigidPose(desired, rotation);
-                        }
-                        else
-                        {
-                            local = new Pose { Position = plan.CanonicalReference[c].Position, Rotation = rotation, Scale = Float3.One };
-                            canonicalModel[c] = Compose(ParentModel(canonicalModel, plan.CanonicalParents[c]), local);
-                        }
-                    }
-                    if (!RigidMath.UnitPose(local))
-                    {
-                        Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': canonical bone " + c + " is not a unit pose. Fix: check the clip for scaled bones, then rebake.", clip);
-                        return false;
-                    }
-                    samples[f * SharedFamilyBake.CanonicalBones + c] = local;
-                }
+                else
+                    Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': canonical bone " + badBone + " is not a unit pose. Fix: check the clip for scaled bones, then rebake.", clip);
+                return false;
             }
             if (!SharedFamilyBake.EncodeCanonicalSamples(samples, frames, clip.length, clip.isLooping, out var bytes, out _))
             {
@@ -936,17 +983,6 @@ namespace SA.Editor
             builder.Dispose();
             AddBlobAsset(ref clipBlob, out _);
             return true;
-        }
-
-        static RigidPose ParentModel(RigidPose[] canonicalModel, int parent)
-        {
-            return parent < 0 ? RigidPose.Identity : canonicalModel[parent];
-        }
-
-        static RigidPose Compose(in RigidPose parent, in Pose local)
-        {
-            var rotation = Quaternion.Normalize(Quaternion.Multiply(Quaternion.Normalize(parent.Rotation), Quaternion.Normalize(local.Rotation)));
-            return new RigidPose(parent.Position + Quaternion.Rotate(Quaternion.Normalize(parent.Rotation), local.Position), rotation);
         }
 
         bool SampleRigClip(Transform root, List<Transform> skeleton, AnimationClip clip, float sampleRate, out Pose[] frames, out int frameCount, out bool rootMoves)
