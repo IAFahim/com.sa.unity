@@ -385,7 +385,7 @@ namespace SA.Editor
             var picks = new[] { 0, frames / 2, frames - 1 };
             foreach (var pick in picks)
             {
-                var seconds = duration * pick / Math.Max(1, frames - 1);
+                var seconds = loop && pick == frames - 1 ? duration * (1.0 - 1e-9) : duration * pick / Math.Max(1, frames - 1);
                 var read = clip.Sample(seconds, reference, probe);
                 if (read != AnimationError.None)
                 {
@@ -448,8 +448,9 @@ namespace SA.Editor
                     }
                     else
                     {
-                        var parentModel = frameModel[targetParents[t]];
-                        rotation = Quaternion.Normalize(Quaternion.Multiply(Quaternion.Multiply(Quaternion.InverseUnit(Quaternion.Normalize(parentModel.Rotation)), frameLocal[t].Rotation), correction));
+                        var canonicalParent = ParentModel(canonicalModel, canonicalParents[c]);
+                        rotation = Quaternion.Normalize(Quaternion.Multiply(Quaternion.Multiply(Quaternion.InverseUnit(Quaternion.Normalize(canonicalParent.Rotation)),
+                            Quaternion.Normalize(frameModel[t].Rotation)), correction));
                     }
                     if (c == 1)
                     {
@@ -462,8 +463,12 @@ namespace SA.Editor
                     }
                     else
                     {
-                        local = new Pose { Position = canonicalReference[c].Position, Rotation = rotation, Scale = Float3.One };
-                        canonicalModel[c] = Compose(ParentModel(canonicalModel, canonicalParents[c]), local);
+                        var canonicalParent = ParentModel(canonicalModel, canonicalParents[c]);
+                        var targetParent = targetParents[t] < 0 ? RigidPose.Identity : frameModel[targetParents[t]];
+                        var shift = CanonicalTranslation.ToCanonical(targetParent.Rotation, canonicalParent.Rotation,
+                            frameLocal[t].Position - row.Calibration.Position, heightRatio);
+                        local = new Pose { Position = canonicalReference[c].Position + shift, Rotation = rotation, Scale = Float3.One };
+                        canonicalModel[c] = Compose(canonicalParent, local);
                     }
                 }
                 if (!RigidMath.UnitPose(local))

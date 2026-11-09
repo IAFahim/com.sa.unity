@@ -207,6 +207,55 @@ namespace SA.Editor
                 FootMarkers, !lossless, out saclip, out error);
         }
 
+        public static bool TryEncode(FamilyRigPlan plan, Pose[] canonicalSamples, RigidPose[] planarRoot, double duration, bool loop, bool lossless,
+            out byte[] saclip, out string error)
+        {
+            saclip = Array.Empty<byte>();
+            if (!Valid(plan, out error))
+                return false;
+            if (!(duration > 0.0) || double.IsInfinity(duration))
+            {
+                error = "duration must be positive.";
+                return false;
+            }
+            if (canonicalSamples == null || planarRoot == null || planarRoot.Length < 2 || canonicalSamples.Length != planarRoot.Length * CanonicalBones)
+            {
+                error = "expected at least two frames of " + CanonicalBones + " canonical bones with one planar root each.";
+                return false;
+            }
+            return SharedFamilyBake.EncodeCanonicalSamples(canonicalSamples, planarRoot.Length, duration, loop, RootPolicy.Planar, planarRoot,
+                FootMarkers, !lossless, out saclip, out error);
+        }
+
+        public static bool TryConvert(FamilyRigPlan plan, AnimationClip clip, float hz, bool lossless, out byte[] saclip, out string error)
+        {
+            saclip = Array.Empty<byte>();
+            if (!TrySample(plan, clip, hz, out var canonical, out var root, out _, out error))
+                return false;
+            return TryEncode(plan, canonical, root, EncodedDuration(clip, hz), clip.isLooping, lossless, out saclip, out error);
+        }
+
+        public static int SampleCount(AnimationClip clip, float hz)
+        {
+            if (clip == null || !(hz > 0f) || !float.IsFinite(hz) || !(clip.length > 0f) || !float.IsFinite(clip.length))
+                return 2;
+            return Math.Max(2, (int)Math.Round(clip.length * (double)hz) + 1);
+        }
+
+        public static double SampleSeconds(AnimationClip clip, int frames, int frame)
+        {
+            if (clip == null || frames < 2 || !(clip.length > 0f) || !float.IsFinite(clip.length))
+                return 0.0;
+            return clip.length * (double)Math.Max(0, Math.Min(frames - 1, frame)) / (frames - 1);
+        }
+
+        public static double EncodedDuration(AnimationClip clip, float hz)
+        {
+            if (clip != null && clip.length > 0f && float.IsFinite(clip.length))
+                return clip.length;
+            return hz > 0f && float.IsFinite(hz) ? 1.0 / hz : 1.0 / DefaultSampleRate;
+        }
+
         public static bool TryCapture(FamilyRigPlan plan, out Pose[] canonical, out string error)
         {
             canonical = Array.Empty<Pose>();
@@ -267,6 +316,7 @@ namespace SA.Editor
                     error = "retarget apply failed at frame " + f + " (" + apply + ").";
                     return false;
                 }
+                CanonicalTranslation.Apply(plan.rows, plan.binding, plan.canonicalParents, frame, plan.canonicalReference, canonicalModel, targetModel, targetFrame);
                 Array.Copy(targetFrame, 0, output, f * count, count);
             }
             targetLocals = output;
@@ -294,7 +344,7 @@ namespace SA.Editor
                 error = "the planned character no longer exists.";
                 return false;
             }
-            frames = Math.Max(2, (int)Math.Floor(clip.length * hz + 1e-3) + 1);
+            frames = SampleCount(clip, hz);
             var count = plan.bones.Length;
             var copy = UnityEngine.Object.Instantiate(plan.character);
             copy.hideFlags = HideFlags.HideAndDontSave;
@@ -337,7 +387,7 @@ namespace SA.Editor
                         all[i].localRotation = restRotations[i];
                         all[i].localScale = restScales[i];
                     }
-                    clip.SampleAnimation(driven, Math.Min(f / hz, clip.length));
+                    clip.SampleAnimation(driven, (float)SampleSeconds(clip, frames, f));
                     var moved = Read(top);
                     for (var b = 0; b < count; b++)
                     {
@@ -616,19 +666,28 @@ namespace SA.Editor
             Array.Copy(plan.rest, plan.calibration, count);
             if (avatar != null)
             {
-                var skeleton = new Dictionary<string, UnityEngine.Quaternion>(StringComparer.Ordinal);
-                foreach (var bone in avatar.humanDescription.skeleton)
+                var description = avatar.humanDescription;
+                var skeleton = new Dictionary<string, SkeletonBone>(StringComparer.Ordinal);
+                foreach (var bone in description.skeleton)
                     if (!string.IsNullOrEmpty(bone.name) && !skeleton.ContainsKey(bone.name))
-                        skeleton.Add(bone.name, bone.rotation);
+                        skeleton.Add(bone.name, bone);
+                var human = new HashSet<string>(StringComparer.Ordinal);
+                foreach (var bone in description.human)
+                    if (!string.IsNullOrEmpty(bone.boneName))
+                        human.Add(bone.boneName);
                 var found = 0;
                 for (var b = 1; b < count; b++)
                 {
-                    if (!skeleton.TryGetValue(plan.bones[b].name, out var rotation))
+                    if (!skeleton.TryGetValue(plan.bones[b].name, out var described))
                         continue;
+                    var rotation = described.rotation;
                     var q = Quaternion.Normalize(new Quaternion(rotation.x, rotation.y, rotation.z, rotation.w));
                     if (!RigidMath.UnitRotation(q))
                         continue;
                     plan.calibration[b].Rotation = q;
+                    var position = described.position;
+                    if (human.Contains(plan.bones[b].name) && float.IsFinite(position.x) && float.IsFinite(position.y) && float.IsFinite(position.z))
+                        plan.calibration[b].Position = new Float3(position.x, position.y, position.z);
                     found++;
                 }
                 plan.calibratedFromAvatar = found > 0;

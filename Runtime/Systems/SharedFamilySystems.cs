@@ -324,6 +324,8 @@ namespace SA
                     EntityManager.SetComponentData(entity, clock);
                     return;
                 }
+                CanonicalTranslation.Apply(state.Rows, state.Binding, canonicalParents.AsSpan(), blended.AsSpan(), familyReference.AsSpan(),
+                    canonicalModel.AsSpan(), targetModel.GetSubArray(0, boneCount).AsSpan(), destination);
             }
             if (!SameMembers(ordered.Slice(0, active), state, active))
                 clock.Continuity++;
