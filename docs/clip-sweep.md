@@ -1,6 +1,6 @@
 # Clip sweep: SA against Unity's Humanoid playback
 
-Date: 2026-11-10. Unity 7000.0.0a12, batchmode Editor on a separate copy project (`~/sweep-project`), com.sa.unity branch `feat/clip-sweep`, com.sa.motion.unity bridge from sa-motion `e56b12f` (unchanged). Every number below comes from a run on that project. The per-clip CSV stays in `~/sweep-project/Temp/sa/sweep/sweep.csv` because it names corpus assets; `docs/clip-sweep-summary.csv` holds the numbers only.
+Date: 2026-11-10. Unity 7000.0.0a12, batchmode Editor on a separate copy project (`~/sweep-project`), com.sa.unity branch `feat/clip-sweep`, com.sa.motion.unity bridge from sa-motion `e56b12f` (unchanged). Every number below comes from a run on that project. The per-clip CSVs stay in `~/sweep-project/Temp/sa/sweep/` (copied to `~/sweep-project/SweepResults/`, since the Editor clears Temp on start) because it names corpus assets; `docs/clip-sweep-summary.csv` holds the numbers only.
 
 ## Method
 
@@ -82,12 +82,12 @@ The gate compares at sample times. Between them SA interpolates linearly; Unity 
 | Sample rate | rows at most 1 deg | at most 2 deg | median | p90 | p99 | mean size |
 |---|---|---|---|---|---|---|
 | clip rate (1x) | 15.7% | 44% | 2.15 deg | 7.2 deg | 17 deg | 31.6 KB |
-| 2x | 43% | 70% | 1.18 deg | 4.2 deg | 14 deg | 54.3 KB |
-| 4x | 77% | 92% | 0.45 deg | 1.8 deg | 4.2 deg | 103.8 KB |
+| 2x | 44% | 70% | 1.14 deg | 4.5 deg | 10.3 deg | 58.3 KB |
+| 4x | 77% | 92% | 0.44 deg | 1.8 deg | 4.2 deg | 111.8 KB |
 
-(2x and 4x were measured on the corpus before the baseplayer clone finished: 11034 rows.) The error falls roughly linearly with the rate, so Unity's in-between is not a smooth curve that cubic interpolation would recover: Catmull-Rom in the decoder was measured and does not help (1x: 31% at most 1 deg but p90 10.8 deg). Feet and toes dominate. The runtime samples arbitrary times, so this is what a player sees between source frames.
+All three rates were measured on the full corpus (12438 rows); every rate still passes the per-frame gate at 100%.
 
-Proposed gate (owner decides): keep the per-frame gate (met at 100%), and add an in-between gate over the corpus of **p90 at most 2 deg and p99 at most 5 deg outside Unity's own jumps**, met by encoding at 4x the clip rate (pass `hz * 4` to `TrySample`, about 3.3x the bytes). A per-clip worst-case in-between gate is not reached by sampling alone: at 4x the worst row is still 90 deg (cause not analysed). The alternative that keeps sizes is to encode Unity's keyframes and tangents instead of samples, which needs a codec change in sa-motion.
+Proposed gate (owner decides): keep the per-frame gate (met at 100%), and add an in-between gate over the corpus of **p90 at most 2 deg and p99 at most 5 deg outside Unity's own jumps**, met by encoding at 4x the clip rate (pass `hz * 4` to `TrySample`, about 3.5x the bytes). A per-clip worst-case in-between gate is not reached by sampling alone: at 4x the worst row is still 90 deg (cause not analysed). The alternative that keeps sizes is to encode Unity's keyframes and tangents instead of samples, which needs a codec change in sa-motion.
 
 ## Reproduce
 
