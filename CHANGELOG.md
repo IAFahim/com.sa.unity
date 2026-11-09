@@ -1,6 +1,9 @@
 Unreleased
 ----------
 
+- Clip sweep fixes (`docs/clip-sweep.md`): model-space rows of `TargetToCanonical` used the inverse of the target parent instead of the canonical parent, which broke every clip whose root moves and every bone under an unmapped intermediate bone; looping clips whose last frame differs from the first now encode; Humanoid avatars calibrate human-bone positions from the avatar skeleton, as Unity writes them; canonical poses carry per-bone translation offsets (translation DoF, arm/leg stretch) through `CanonicalTranslation`, applied by `FamilyClips.TryApply` and `SharedFamilySystem`; the shared-family baker maps Humanoid avatars through `HumanBodyBones` and calibrates from the avatar like `FamilyClips`.
+- `FamilyClips.TrySample` spaces frames evenly over the exact clip length; new `TryEncode(plan, canonical, root, duration, loop, lossless, ...)`, `TryConvert`, `SampleCount`, `SampleSeconds`, `EncodedDuration`.
+- `FamilyClipSweep` and `FamilyClipRuntimeCheck` compare SA against `AnimationClip.SampleAnimation` per frame and through the timeline system; menu `Tools/SA/Animation Library/Check Clips Against Unity (Selected Character and Folders)`.
 - Opt-in inertialized transitions on CPU rigs: `RigAuthoring.Inertialize`, `TransitionPlayback.Play` and `Blend`, `TransitionIntent`, `BoneTransition`. A new request cuts to its destination and decays the offset from the last output; no outgoing clip is kept alive.
 - `SA.Runtime` now references the portable `SA.Motion` library through the `com.sa.motion.unity` package. Add that package to the project manifest.
 - Optional shape addon assembly `SA.Shape.Unity`: per-character proportions from `.sashape` definitions with revisioned parameters, staged Prepare/Commit timeline evaluation and named channel controls. Shaped rigs are driven by the addon system; ordinary characters compile and behave as before. Needs `SA.Shape.dll` from the `com.sa.motion.unity` bridge next to the existing DLLs.

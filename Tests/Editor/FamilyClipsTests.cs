@@ -577,5 +577,228 @@ namespace SA.Tests
                 UnityEngine.Object.DestroyImmediate(character);
             }
         }
+
+        static void AddCurves(AnimationClip clip, string path, Func<float, Vector3> position, Func<float, UnityEngine.Quaternion> rotation, float seconds)
+        {
+            var curves = new AnimationCurve[7];
+            for (var i = 0; i < curves.Length; i++)
+                curves[i] = new AnimationCurve();
+            var previous = UnityEngine.Quaternion.identity;
+            for (var f = 0; f <= Mathf.RoundToInt(seconds * Hz); f++)
+            {
+                var time = f / Hz;
+                if (position != null)
+                {
+                    var p = position(time);
+                    curves[0].AddKey(time, p.x);
+                    curves[1].AddKey(time, p.y);
+                    curves[2].AddKey(time, p.z);
+                }
+                if (rotation != null)
+                {
+                    var q = rotation(time);
+                    if (UnityEngine.Quaternion.Dot(q, previous) < 0f)
+                        q = new UnityEngine.Quaternion(-q.x, -q.y, -q.z, -q.w);
+                    previous = q;
+                    curves[3].AddKey(time, q.x);
+                    curves[4].AddKey(time, q.y);
+                    curves[5].AddKey(time, q.z);
+                    curves[6].AddKey(time, q.w);
+                }
+            }
+            string[] names = { "localPosition.x", "localPosition.y", "localPosition.z", "localRotation.x", "localRotation.y", "localRotation.z", "localRotation.w" };
+            for (var i = 0; i < names.Length; i++)
+                if (curves[i].length > 0)
+                    clip.SetCurve(path, typeof(Transform), names[i], curves[i]);
+        }
+
+        static GameObject MovingParentRig(out Dictionary<string, Transform> lookup, out Transform armature)
+        {
+            var rig = MixamoRig(out lookup);
+            armature = new GameObject("Armature").transform;
+            armature.SetParent(rig.transform, false);
+            lookup["Hips"].SetParent(armature, true);
+            return rig;
+        }
+
+        static void AssertSweepPasses(FamilyRigPlan plan, AnimationClip clip, bool loop)
+        {
+            var row = new ClipSweepRow();
+            Assert.IsTrue(FamilyClipSweep.TryMeasure(plan, clip, Hz, 1f, ClipSweepLimits.Default, row, out var error), error);
+            Report("sweep-" + clip.name, FamilyClipSweep.Header + "\n" + FamilyClipSweep.ToCsv(row) + "\n");
+            Assert.AreEqual(FamilyClipSweep.Pass, row.Status, row.Reason);
+            Assert.AreEqual(loop, row.EncodedLoop);
+            Assert.AreEqual(clip.length, row.EncodedDuration, 1e-6);
+            Assert.LessOrEqual(row.Degrees, 0.1f, row.WorstBone);
+            Assert.LessOrEqual(row.Centimetres, 0.1f);
+        }
+
+        [Test]
+        public void SampleTimesSpanTheExactClipLength()
+        {
+            var clip = new AnimationClip { frameRate = Hz };
+            clip.SetCurve("", typeof(Transform), "localPosition.x", AnimationCurve.Linear(0f, 0f, 1.05f, 1f));
+            try
+            {
+                var frames = FamilyClips.SampleCount(clip, Hz);
+                Assert.AreEqual((int)Math.Round(clip.length * (double)Hz) + 1, frames);
+                Assert.AreEqual(0.0, FamilyClips.SampleSeconds(clip, frames, 0));
+                Assert.AreEqual(clip.length, FamilyClips.SampleSeconds(clip, frames, frames - 1), 1e-6);
+                Assert.AreEqual(clip.length, FamilyClips.EncodedDuration(clip, Hz), 1e-6);
+            }
+            finally
+            {
+                UnityEngine.Object.DestroyImmediate(clip);
+            }
+        }
+
+        [Test]
+        public void LoopingClipWhoseEndDiffersFromItsStartEncodes()
+        {
+            var reference = SharedFamilyBake.CanonicalReferencePoses();
+            var samples = new Pose[9 * FamilyClips.CanonicalBones];
+            for (var f = 0; f < 9; f++)
+                for (var c = 0; c < FamilyClips.CanonicalBones; c++)
+                {
+                    var pose = reference[c];
+                    if (c == 11)
+                        pose.Rotation = Quaternion.Normalize(Quaternion.Multiply(pose.Rotation, Quaternion.AxisAngle(new Float3(0f, 0f, 1f), 0.15f * f)));
+                    samples[f * FamilyClips.CanonicalBones + c] = pose;
+                }
+            Assert.IsTrue(SharedFamilyBake.EncodeCanonicalSamples(samples, 9, 1.0, true, out var bytes, out var error), error);
+            Assert.Greater(bytes.Length, 0);
+        }
+
+        [Test]
+        public void TranslationOffsetsRoundTripThroughTheCanonicalFrame()
+        {
+            var targetParent = Quaternion.Normalize(new Quaternion(0.2f, -0.4f, 0.1f, 0.9f));
+            var canonicalParent = Quaternion.Normalize(new Quaternion(-0.3f, 0.1f, 0.5f, 0.8f));
+            var offset = new Float3(0.03f, -0.02f, 0.05f);
+            var canonical = CanonicalTranslation.ToCanonical(targetParent, canonicalParent, offset, 1.7f);
+            var back = CanonicalTranslation.ToTarget(targetParent, canonicalParent, canonical, 1.7f);
+            Assert.Less(SharedFamilyBake.Distance(offset, back), 1e-6f);
+            Assert.AreEqual(0f, CanonicalTranslation.ToTarget(targetParent, canonicalParent, offset, 0f).LengthSquared);
+        }
+
+        [Test]
+        public void HipsUnderARotatingUnmappedParentMatchUnity()
+        {
+            var rig = MovingParentRig(out var lookup, out var armature);
+            Avatar avatar = null;
+            AnimationClip clip = null;
+            try
+            {
+                avatar = BuildAvatar(rig);
+                rig.AddComponent<Animator>().avatar = avatar;
+                Assert.IsTrue(FamilyClips.TryPlan(rig, out var plan, out var error), error);
+                clip = SyntheticClip(lookup, rig.transform);
+                clip.name = "W1MovingParent";
+                AddCurves(clip, "Armature", t => new Vector3(0.4f * t, 0f, 0.9f * t), t => UnityEngine.Quaternion.AngleAxis(120f * t, Vector3.up), 1f);
+                AssertSweepPasses(plan, clip, false);
+            }
+            finally
+            {
+                if (clip != null)
+                    UnityEngine.Object.DestroyImmediate(clip);
+                UnityEngine.Object.DestroyImmediate(rig);
+                if (avatar != null)
+                    UnityEngine.Object.DestroyImmediate(avatar);
+            }
+        }
+
+        [Test]
+        public void BoneTranslationAndLoopFlagMatchUnity()
+        {
+            var rig = MixamoRig(out var lookup);
+            Avatar avatar = null;
+            AnimationClip clip = null;
+            try
+            {
+                avatar = BuildAvatar(rig);
+                rig.AddComponent<Animator>().avatar = avatar;
+                Assert.IsTrue(FamilyClips.TryPlan(rig, out var plan, out var error), error);
+                clip = SyntheticClip(lookup, rig.transform);
+                clip.name = "W1Translation";
+                var spine = lookup["Spine"];
+                var rest = spine.localPosition;
+                AddCurves(clip, AnimationUtility.CalculateTransformPath(spine, rig.transform), t => rest + new Vector3(0.03f * Mathf.Sin(6f * t), 0.02f * t, 0f), null, 1f);
+                var settings = AnimationUtility.GetAnimationClipSettings(clip);
+                settings.loopTime = true;
+                AnimationUtility.SetAnimationClipSettings(clip, settings);
+                AssertSweepPasses(plan, clip, true);
+            }
+            finally
+            {
+                if (clip != null)
+                    UnityEngine.Object.DestroyImmediate(clip);
+                UnityEngine.Object.DestroyImmediate(rig);
+                if (avatar != null)
+                    UnityEngine.Object.DestroyImmediate(avatar);
+            }
+        }
+
+        [Test]
+        public void TimelineSystemPlaysTheSaclipLikeTheDecoderAndUnity()
+        {
+            var rig = MovingParentRig(out var lookup, out _);
+            Avatar avatar = null;
+            AnimationClip clip = null;
+            try
+            {
+                avatar = BuildAvatar(rig);
+                rig.AddComponent<Animator>().avatar = avatar;
+                Assert.IsTrue(FamilyClips.TryPlan(rig, out var plan, out var error), error);
+                clip = SyntheticClip(lookup, rig.transform);
+                clip.name = "W1Runtime";
+                AddCurves(clip, "Armature", t => new Vector3(0.2f * t, 0f, 1.1f * t), t => UnityEngine.Quaternion.AngleAxis(-70f * t, Vector3.up), 1f);
+                Assert.IsTrue(FamilyClipRuntimeCheck.TryMeasure(plan, clip, Hz, 10, FamilyClipRuntimeCheck.AttachLikeRuntime, out var result, out error), error);
+                Report("runtime-synthetic", "samples " + result.Samples + ", truth " + result.TruthDegrees.ToString("0.0000", CultureInfo.InvariantCulture) + " deg "
+                    + result.TruthCentimetres.ToString("0.0000", CultureInfo.InvariantCulture) + " cm (" + result.Worst + "), decoder "
+                    + result.DecoderDegrees.ToString("0.000000", CultureInfo.InvariantCulture) + " deg " + result.DecoderCentimetres.ToString("0.000000", CultureInfo.InvariantCulture) + " cm\n");
+                Assert.AreEqual(20, result.Samples);
+                Assert.LessOrEqual(result.TruthDegrees, 1f, result.Worst);
+                Assert.LessOrEqual(result.TruthCentimetres, 1f);
+                Assert.LessOrEqual(result.DecoderDegrees, 0.01f);
+                Assert.LessOrEqual(result.DecoderCentimetres, 0.01f);
+            }
+            finally
+            {
+                if (clip != null)
+                    UnityEngine.Object.DestroyImmediate(clip);
+                UnityEngine.Object.DestroyImmediate(rig);
+                if (avatar != null)
+                    UnityEngine.Object.DestroyImmediate(avatar);
+            }
+        }
+
+        [Test, Explicit, Category("RealAssets")]
+        public void CorpusSweepPassesEveryHumanoidClip()
+        {
+            var folders = new List<string>();
+            foreach (var folder in AssetDatabase.GetSubFolders("Assets"))
+                if (Path.GetFileName(folder).StartsWith("zz_corpus_", StringComparison.Ordinal))
+                    folders.Add(folder);
+            if (folders.Count == 0)
+                Assert.Ignore("no Assets/zz_corpus_* folders");
+            var characters = new List<string>();
+            foreach (var guid in AssetDatabase.FindAssets("PolygonSyntyCharacter t:Model", folders.ToArray()))
+                characters.Add(AssetDatabase.GUIDToAssetPath(guid));
+            if (characters.Count == 0)
+                Assert.Ignore("Synty character missing");
+            var csv = Path.Combine(Application.dataPath, "..", "Temp", "sa", "sweep", "test-sweep.csv");
+            var report = FamilyClipSweep.Run(characters.GetRange(0, 1).ToArray(), null, folders.ToArray(), csv, 0, int.MaxValue, false);
+            var failed = 0;
+            var first = string.Empty;
+            foreach (var line in File.ReadAllLines(csv))
+                if (line.Contains("," + FamilyClipSweep.Fail + ","))
+                {
+                    failed++;
+                    if (first.Length == 0)
+                        first = line;
+                }
+            Report("corpus", report + "failed " + failed + "\n" + first + "\n");
+            Assert.AreEqual(0, failed, first);
+        }
     }
 }

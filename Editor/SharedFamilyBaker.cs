@@ -606,7 +606,7 @@ namespace SA.Editor
 
     internal class SharedFamilyBaker : Baker<SharedFamilyAuthoring>
     {
-        const float UnitScaleTolerance = 1e-5f;
+        const float UnitScaleTolerance = 1e-4f;
 
         sealed class FamilyPlan
         {
@@ -799,6 +799,9 @@ namespace SA.Editor
                 }
                 plan.Calibration[b] = new Pose { Position = Conversions.ToMotion(rest.Position), Rotation = Conversions.ToMotion(rest.Rotation), Scale = Float3.One };
             }
+            var human = animator != null && animator.avatar != null && animator.avatar.isValid && animator.avatar.isHuman;
+            if (human)
+                FamilyClips.ApplyAvatarCalibration(animator.avatar, skeleton, plan.Calibration);
             var identityNames = new string[count];
             for (var b = 0; b < count; b++)
                 identityNames[b] = AnimationUtility.CalculateTransformPath(skeleton[b], root) + "#" + skeleton[b].name;
@@ -807,7 +810,9 @@ namespace SA.Editor
                 Debug.LogError("SA: " + authoring.name + " at '" + AssetPath(authoring) + "': target identity failed to compute. Fix: check the skeleton for duplicate paths, then rebake.", authoring);
                 return false;
             }
-            plan.SourceMap = SolveMap(skeleton);
+            plan.SourceMap = human ? AvatarMap(animator, skeleton) : Array.Empty<int>();
+            if (plan.SourceMap.Length == 0)
+                plan.SourceMap = SolveMap(skeleton);
             if (plan.SourceMap.Length == 0)
             {
                 Debug.LogError("SA: " + authoring.name + " at '" + AssetPath(authoring) + "': bone assignment failed. Fix: rename rig bones toward humanoid names, then rebake.", authoring);
@@ -859,6 +864,16 @@ namespace SA.Editor
                 return false;
             }
             return true;
+        }
+
+        static int[] AvatarMap(Animator animator, List<Transform> skeleton)
+        {
+            var sourceMap = FamilyClips.AvatarRoles(animator, skeleton);
+            DropTopologyViolations(skeleton, sourceMap);
+            foreach (var role in SharedFamilyBake.RequiredRoles)
+                if (Array.IndexOf(sourceMap, role) < 0)
+                    return Array.Empty<int>();
+            return sourceMap;
         }
 
         static int[] SolveMap(List<Transform> skeleton)

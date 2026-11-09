@@ -49,6 +49,8 @@ namespace SA.Editor
         public float RootDegrees;
         public float MidDegrees;
         public float MidCentimetres;
+        public float MidJumpDegrees;
+        public float MidCubicDegrees;
         public float UnityRootCentimetres;
         public double Length;
         public double EncodedDuration;
@@ -64,7 +66,9 @@ namespace SA.Editor
         public const string Pass = "PASS";
         public const string Fail = "FAIL";
         public const string NonHumanoid = "NONHUMANOID";
-        public const string Header = "clip,take,character,frames,hz,status,worst_bone,degrees,cm,root_cm,root_deg,mid_worst,mid_degrees,mid_cm,unity_root_cm,length_s,encoded_s,loop,encoded_loop,bytes,seconds,flags,reason";
+        public const string Header = "clip,take,character,frames,hz,status,worst_bone,degrees,cm,root_cm,root_deg,mid_worst,mid_degrees,mid_cm,mid_jump_degrees,mid_cubic_degrees,unity_root_cm,length_s,encoded_s,loop,encoded_loop,bytes,seconds,flags,reason";
+
+        public const float JumpDegrees = 90f;
 
         static readonly int[] TrackedPositions = { 1, 6, 13, 32, 50, 54 };
 
@@ -129,19 +133,16 @@ namespace SA.Editor
                     avatar = importer.sourceAvatar;
                 proof.Append(" avatar.isHuman=").Append(avatar != null && avatar.isHuman);
             }
-            else
+            var animatorCurves = 0;
+            var transforms = 0;
+            foreach (var binding in AnimationUtility.GetCurveBindings(clip))
             {
-                var muscles = 0;
-                var transforms = 0;
-                foreach (var binding in AnimationUtility.GetCurveBindings(clip))
-                {
-                    if (binding.type == typeof(Animator))
-                        muscles++;
-                    else if (binding.type == typeof(Transform))
-                        transforms++;
-                }
-                proof.Append(" muscleCurves=").Append(muscles).Append(" transformCurves=").Append(transforms);
+                if (binding.type == typeof(Animator))
+                    animatorCurves++;
+                else if (binding.type == typeof(Transform))
+                    transforms++;
             }
+            proof.Append(" animatorCurves=").Append(animatorCurves).Append(" transformCurves=").Append(transforms);
             return proof.ToString();
         }
 
@@ -196,26 +197,6 @@ namespace SA.Editor
                 if (Math.Abs(importer.globalScale - 1f) > 1e-4f || !importer.useFileScale)
                     flags.Add("importScale");
             }
-            var fingers = false;
-            var face = false;
-            var toes = false;
-            foreach (var binding in AnimationUtility.GetCurveBindings(clip))
-            {
-                if (binding.type != typeof(Animator))
-                    continue;
-                var name = binding.propertyName;
-                if (name.Contains("Index") || name.Contains("Thumb") || name.Contains("Middle") || name.Contains("Ring") || name.Contains("Little"))
-                    fingers = true;
-                if (name.Contains("Jaw") || name.Contains("Eye"))
-                    face = true;
-                if (name.Contains("Toes"))
-                    toes = true;
-            }
-            flags.Add(fingers ? "fingerCurves" : "noFingerCurves");
-            if (face)
-                flags.Add("faceCurves");
-            if (toes)
-                flags.Add("toeCurves");
             return string.Join(";", flags);
         }
 
@@ -319,10 +300,14 @@ namespace SA.Editor
             var rootLocals = new Pose[frames * count];
             var steps = 2 * frames - 1;
             var duration = loaded.Duration;
+            var frameTruth = new[] { new Quaternion[count], new Quaternion[count] };
+            var cubicFrame = new Pose[FamilyClips.CanonicalBones];
+            var cubicRoot = new RigidPose[1];
+            var cubicModel = new RigidPose[count];
             for (var s = 0; s < steps; s++)
             {
-                var mid = (s & 1) != 0;
-                var frame = s >> 1;
+                var mid = s > 0 && (s & 1) == 0;
+                var frame = s == 0 ? 0 : mid ? s / 2 - 1 : (s + 1) / 2;
                 var seconds = mid ? duration * (frame + 0.5) / (frames - 1) : duration * frame / (frames - 1);
                 var clipSeconds = clip.length > 0f ? Math.Min(clip.length, seconds) : 0.0;
                 if (loaded.Loop && frame == frames - 1)
@@ -361,6 +346,16 @@ namespace SA.Editor
                     error = "applied pose failed to compose at " + seconds.ToString("0.###", CultureInfo.InvariantCulture) + " s.";
                     return false;
                 }
+                var jump = false;
+                for (var b = 1; mid && b < count; b++)
+                    if (plan.canonicalOfBone[b] > 0 && Degrees(frameTruth[frame & 1][b], frameTruth[(frame + 1) & 1][b]) > JumpDegrees)
+                        jump = true;
+                if (mid && !jump && CubicAt(loaded, reference, start, frames, frame, cubicFrame, cubicRoot)
+                    && FamilyClips.TryApply(plan, cubicFrame, cubicRoot, out var cubicLocals, out _)
+                    && RigidMath.Model(plan.parents, cubicLocals, cubicModel) == AnimationError.None)
+                    for (var b = 1; b < count; b++)
+                        if (plan.canonicalOfBone[b] > 0)
+                            row.MidCubicDegrees = Math.Max(row.MidCubicDegrees, Degrees(truthModel[b].Rotation, cubicModel[b].Rotation));
                 for (var b = 1; b < count; b++)
                 {
                     var c = plan.canonicalOfBone[b];
@@ -371,6 +366,11 @@ namespace SA.Editor
                         degrees = float.PositiveInfinity;
                     if (mid)
                     {
+                        if (jump)
+                        {
+                            row.MidJumpDegrees = Math.Max(row.MidJumpDegrees, degrees);
+                            continue;
+                        }
                         if (degrees > row.MidDegrees || float.IsInfinity(degrees))
                         {
                             row.MidDegrees = degrees;
@@ -378,6 +378,7 @@ namespace SA.Editor
                         }
                         continue;
                     }
+                    frameTruth[frame & 1][b] = truthModel[b].Rotation;
                     var name = SharedFamilyBake.CanonicalNames[c];
                     if (!row.BoneDegrees.TryGetValue(name, out var worst) || degrees > worst)
                         row.BoneDegrees[name] = degrees;
@@ -425,6 +426,47 @@ namespace SA.Editor
                 row.RootDegrees = Math.Max(row.RootDegrees, float.IsFinite(degrees) ? degrees : float.PositiveInfinity);
             }
             return true;
+        }
+
+        static bool CubicAt(SharedClip loaded, Pose[] reference, RigidPose start, int frames, int frame, Pose[] output, RigidPose[] root)
+        {
+            var poses = new Pose[4][];
+            var roots = new RigidPose[4];
+            for (var k = 0; k < 4; k++)
+            {
+                var index = Math.Max(0, Math.Min(frames - 1, frame - 1 + k));
+                var seconds = loaded.Duration * index / (frames - 1);
+                if (loaded.Loop && index == frames - 1)
+                    seconds = loaded.Duration * (1.0 - 1e-9);
+                poses[k] = new Pose[output.Length];
+                if (loaded.Sample(seconds, reference, poses[k]) != AnimationError.None)
+                    return false;
+                roots[k] = loaded.Root[index];
+            }
+            for (var c = 0; c < output.Length; c++)
+                output[c] = new Pose
+                {
+                    Position = Cubic(poses[0][c].Position, poses[1][c].Position, poses[2][c].Position, poses[3][c].Position),
+                    Rotation = Cubic(poses[0][c].Rotation, poses[1][c].Rotation, poses[2][c].Rotation, poses[3][c].Rotation),
+                    Scale = Float3.One
+                };
+            var planar = new RigidPose(Cubic(roots[0].Position, roots[1].Position, roots[2].Position, roots[3].Position),
+                Cubic(roots[0].Rotation, roots[1].Rotation, roots[2].Rotation, roots[3].Rotation));
+            return RigidMath.TryCompose(start, planar, out root[0]);
+        }
+
+        static Float3 Cubic(Float3 a, Float3 b, Float3 c, Float3 d) => (b + c) * 0.5625f - (a + d) * 0.0625f;
+
+        static Quaternion Cubic(Quaternion a, Quaternion b, Quaternion c, Quaternion d)
+        {
+            a = Quaternion.Dot(a, b) < 0f ? -a : a;
+            c = Quaternion.Dot(c, b) < 0f ? -c : c;
+            d = Quaternion.Dot(d, c) < 0f ? -d : d;
+            return Quaternion.Normalize(new Quaternion(
+                (b.X + c.X) * 0.5625f - (a.X + d.X) * 0.0625f,
+                (b.Y + c.Y) * 0.5625f - (a.Y + d.Y) * 0.0625f,
+                (b.Z + c.Z) * 0.5625f - (a.Z + d.Z) * 0.0625f,
+                (b.W + c.W) * 0.5625f - (a.W + d.W) * 0.0625f));
         }
 
         static bool TruthLocals(FamilyRigPlan plan, RigidPose[] truthModel, Pose[] truthLocal)
@@ -479,7 +521,7 @@ namespace SA.Editor
                 .Append(row.Frames.ToString(CultureInfo.InvariantCulture)).Append(',').Append(F(row.Hz)).Append(',').Append(row.Status).Append(',')
                 .Append(Quote(row.WorstBone)).Append(',').Append(F(row.Degrees)).Append(',').Append(F(row.Centimetres)).Append(',')
                 .Append(F(row.RootCentimetres)).Append(',').Append(F(row.RootDegrees)).Append(',').Append(Quote(row.MidWorst)).Append(',').Append(F(row.MidDegrees)).Append(',')
-                .Append(F(row.MidCentimetres)).Append(',').Append(F(row.UnityRootCentimetres)).Append(',')
+                .Append(F(row.MidCentimetres)).Append(',').Append(F(row.MidJumpDegrees)).Append(',').Append(F(row.MidCubicDegrees)).Append(',').Append(F(row.UnityRootCentimetres)).Append(',')
                 .Append(row.Length.ToString("0.######", CultureInfo.InvariantCulture)).Append(',')
                 .Append(row.EncodedDuration.ToString("0.######", CultureInfo.InvariantCulture)).Append(',')
                 .Append(row.Loop ? '1' : '0').Append(',').Append(row.EncodedLoop ? '1' : '0').Append(',')
@@ -496,8 +538,38 @@ namespace SA.Editor
             return "\"" + value.Replace("\"", "\"\"").Replace("\n", " ") + "\"";
         }
 
-        public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append)
+        [MenuItem("Tools/SA/Animation Library/Check Clips Against Unity (Selected Character and Folders)")]
+        static void RunOnSelection()
         {
+            var characters = new List<string>();
+            var folders = new List<string>();
+            foreach (var selected in Selection.objects)
+            {
+                var path = AssetDatabase.GetAssetPath(selected);
+                if (string.IsNullOrEmpty(path))
+                    continue;
+                if (AssetDatabase.IsValidFolder(path))
+                    folders.Add(path);
+                else if (selected is GameObject)
+                    characters.Add(path);
+            }
+            if (characters.Count == 0 || folders.Count == 0)
+            {
+                Debug.LogWarning("SA: select one or more Humanoid characters (model or prefab) and one or more folders with clips in the Project window, then run Tools/SA/Animation Library/Check Clips Against Unity again.");
+                return;
+            }
+            var csv = Path.Combine(Application.dataPath, "..", "Temp", "sa", "sweep", "selection.csv");
+            var report = Run(characters.ToArray(), null, folders.ToArray(), csv, 0, int.MaxValue, false);
+            Debug.Log("SA: clip check against Unity's SampleAnimation finished; rows in " + Path.GetFullPath(csv) + "\n" + report);
+        }
+
+        public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append) =>
+            Run(characters, scales, folders, csvPath, first, count, append, 1f);
+
+        public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append, float rateScale)
+        {
+            if (!(rateScale > 0f) || !float.IsFinite(rateScale))
+                rateScale = 1f;
             var limits = ClipSweepLimits.Default;
             var plans = new List<FamilyRigPlan>();
             var labels = new List<string>();
@@ -533,8 +605,9 @@ namespace SA.Editor
                 using var writer = new StreamWriter(csvPath, append);
                 if (!append)
                     writer.WriteLine(Header);
-                var last = Math.Min(assets.Count, first + count);
+                var last = (int)Math.Min(assets.Count, (long)first + count);
                 var rows = 0;
+                var summary = new ClipSweepSummary(labels);
                 for (var a = first; a < last; a++)
                 {
                     var path = assets[a];
@@ -545,6 +618,7 @@ namespace SA.Editor
                             var skip = new ClipSweepRow { Clip = path, Take = clip.name, Character = "-", Status = NonHumanoid, Length = clip.length, Loop = clip.isLooping };
                             skip.Reason = NonHumanoidProof(path, clip);
                             writer.WriteLine(ToCsv(skip));
+                            summary.NonHumanoid++;
                             rows++;
                             continue;
                         }
@@ -554,7 +628,7 @@ namespace SA.Editor
                             var row = new ClipSweepRow { Clip = path, Take = clip.name, Character = labels[p], Flags = flags };
                             try
                             {
-                                if (!TryMeasure(plans[p], clip, ClipRate(clip), planScales[p], limits, row, out var error))
+                                if (!TryMeasure(plans[p], clip, ClipRate(clip) * rateScale, planScales[p], limits, row, out var error))
                                 {
                                     row.Status = Fail;
                                     row.Reason = "error: " + error;
@@ -566,12 +640,17 @@ namespace SA.Editor
                                 row.Reason = "exception: " + exception.GetType().Name + " " + exception.Message;
                             }
                             writer.WriteLine(ToCsv(row));
+                            summary.Add(p, row);
                             rows++;
                         }
+                        summary.Humanoid++;
                     }
                     writer.Flush();
                 }
                 report.Append("assets ").Append(first).Append("..").Append(last).Append(" of ").Append(assets.Count).Append(", rows ").Append(rows).Append('\n');
+                var text = summary.ToText();
+                File.WriteAllText(Path.ChangeExtension(csvPath, ".summary.txt"), text);
+                report.Append(text);
             }
             finally
             {
@@ -580,6 +659,75 @@ namespace SA.Editor
                         UnityEngine.Object.DestroyImmediate(instance);
             }
             return report.ToString();
+        }
+    }
+    public sealed class ClipSweepSummary
+    {
+        public int Humanoid;
+        public int NonHumanoid;
+        readonly List<string> labels;
+        readonly int[] passed;
+        readonly int[] failed;
+        readonly float[] degrees;
+        readonly float[] centimetres;
+        readonly float[] rootCentimetres;
+        readonly float[] rootDegrees;
+        readonly float[] midDegrees;
+        readonly float[] midCubicDegrees;
+        readonly long[] bytes;
+        readonly SortedDictionary<string, float> bones = new SortedDictionary<string, float>(StringComparer.Ordinal);
+
+        public ClipSweepSummary(List<string> labels)
+        {
+            this.labels = labels;
+            var n = labels.Count;
+            passed = new int[n];
+            failed = new int[n];
+            degrees = new float[n];
+            centimetres = new float[n];
+            rootCentimetres = new float[n];
+            rootDegrees = new float[n];
+            midDegrees = new float[n];
+            midCubicDegrees = new float[n];
+            bytes = new long[n];
+        }
+
+        public void Add(int character, ClipSweepRow row)
+        {
+            if (row.Status == FamilyClipSweep.Pass)
+                passed[character]++;
+            else
+                failed[character]++;
+            degrees[character] = Math.Max(degrees[character], row.Degrees);
+            centimetres[character] = Math.Max(centimetres[character], row.Centimetres);
+            rootCentimetres[character] = Math.Max(rootCentimetres[character], row.RootCentimetres);
+            rootDegrees[character] = Math.Max(rootDegrees[character], row.RootDegrees);
+            midDegrees[character] = Math.Max(midDegrees[character], row.MidDegrees);
+            midCubicDegrees[character] = Math.Max(midCubicDegrees[character], row.MidCubicDegrees);
+            bytes[character] += row.Bytes;
+            foreach (var pair in row.BoneDegrees)
+                if (!bones.TryGetValue(pair.Key, out var worst) || pair.Value > worst)
+                    bones[pair.Key] = pair.Value;
+        }
+
+        public string ToText()
+        {
+            var text = new StringBuilder();
+            text.Append("humanoid clips ").Append(Humanoid).Append(", non-humanoid clips ").Append(NonHumanoid).Append('\n');
+            text.Append("character,passed,failed,worst_deg,worst_cm,worst_root_cm,worst_root_deg,worst_mid_deg,worst_mid_cubic_deg,mean_bytes\n");
+            for (var i = 0; i < labels.Count; i++)
+            {
+                var rows = passed[i] + failed[i];
+                text.Append(labels[i]).Append(',').Append(passed[i]).Append(',').Append(failed[i]).Append(',')
+                    .Append(FamilyClipSweep.F(degrees[i])).Append(',').Append(FamilyClipSweep.F(centimetres[i])).Append(',')
+                    .Append(FamilyClipSweep.F(rootCentimetres[i])).Append(',').Append(FamilyClipSweep.F(rootDegrees[i])).Append(',')
+                    .Append(FamilyClipSweep.F(midDegrees[i])).Append(',').Append(FamilyClipSweep.F(midCubicDegrees[i])).Append(',')
+                    .Append(rows > 0 ? (bytes[i] / rows).ToString(CultureInfo.InvariantCulture) : "0").Append('\n');
+            }
+            text.Append("bone,worst_deg_on_frames\n");
+            foreach (var pair in bones)
+                text.Append(pair.Key).Append(',').Append(FamilyClipSweep.F(pair.Value)).Append('\n');
+            return text.ToString();
         }
     }
 }

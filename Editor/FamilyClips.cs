@@ -514,7 +514,7 @@ namespace SA.Editor
                 Collect(child, into);
         }
 
-        static int[] AvatarRoles(Animator animator, List<Transform> candidates)
+        internal static int[] AvatarRoles(Animator animator, List<Transform> candidates)
         {
             var roles = Unassigned(candidates.Count);
             roles[0] = 0;
@@ -655,6 +655,38 @@ namespace SA.Editor
             return true;
         }
 
+        internal static int ApplyAvatarCalibration(Avatar avatar, IReadOnlyList<Transform> bones, Pose[] calibration)
+        {
+            if (avatar == null || bones == null || calibration == null)
+                return 0;
+            var description = avatar.humanDescription;
+            var skeleton = new Dictionary<string, SkeletonBone>(StringComparer.Ordinal);
+            foreach (var bone in description.skeleton)
+                if (!string.IsNullOrEmpty(bone.name) && !skeleton.ContainsKey(bone.name))
+                    skeleton.Add(bone.name, bone);
+            var human = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var bone in description.human)
+                if (!string.IsNullOrEmpty(bone.boneName))
+                    human.Add(bone.boneName);
+            var found = 0;
+            var count = Math.Min(bones.Count, calibration.Length);
+            for (var b = 1; b < count; b++)
+            {
+                if (bones[b] == null || !skeleton.TryGetValue(bones[b].name, out var described))
+                    continue;
+                var rotation = described.rotation;
+                var q = Quaternion.Normalize(new Quaternion(rotation.x, rotation.y, rotation.z, rotation.w));
+                if (!RigidMath.UnitRotation(q))
+                    continue;
+                calibration[b].Rotation = q;
+                var position = described.position;
+                if (human.Contains(bones[b].name) && float.IsFinite(position.x) && float.IsFinite(position.y) && float.IsFinite(position.z))
+                    calibration[b].Position = new Float3(position.x, position.y, position.z);
+                found++;
+            }
+            return found;
+        }
+
         static bool Calibrate(FamilyRigPlan plan, Avatar avatar, out string error)
         {
             error = string.Empty;
@@ -666,30 +698,7 @@ namespace SA.Editor
             Array.Copy(plan.rest, plan.calibration, count);
             if (avatar != null)
             {
-                var description = avatar.humanDescription;
-                var skeleton = new Dictionary<string, SkeletonBone>(StringComparer.Ordinal);
-                foreach (var bone in description.skeleton)
-                    if (!string.IsNullOrEmpty(bone.name) && !skeleton.ContainsKey(bone.name))
-                        skeleton.Add(bone.name, bone);
-                var human = new HashSet<string>(StringComparer.Ordinal);
-                foreach (var bone in description.human)
-                    if (!string.IsNullOrEmpty(bone.boneName))
-                        human.Add(bone.boneName);
-                var found = 0;
-                for (var b = 1; b < count; b++)
-                {
-                    if (!skeleton.TryGetValue(plan.bones[b].name, out var described))
-                        continue;
-                    var rotation = described.rotation;
-                    var q = Quaternion.Normalize(new Quaternion(rotation.x, rotation.y, rotation.z, rotation.w));
-                    if (!RigidMath.UnitRotation(q))
-                        continue;
-                    plan.calibration[b].Rotation = q;
-                    var position = described.position;
-                    if (human.Contains(plan.bones[b].name) && float.IsFinite(position.x) && float.IsFinite(position.y) && float.IsFinite(position.z))
-                        plan.calibration[b].Position = new Float3(position.x, position.y, position.z);
-                    found++;
-                }
+                var found = ApplyAvatarCalibration(avatar, plan.bones, plan.calibration);
                 plan.calibratedFromAvatar = found > 0;
             }
             plan.calibrationDegrees = new float[count];
