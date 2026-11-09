@@ -1,6 +1,6 @@
 {
   "name": "com.sa.unity",
-  "version": "0.3.1",
+  "version": "0.3.2",
   "displayName": "SA - Simple Animation",
   "description": "Skeletal animation for unmanaged ECS: clip playback and blending with a CPU engine for bone entities and a GPU compute engine. No state machines, no parameters.",
   "unity": "7000.0",
