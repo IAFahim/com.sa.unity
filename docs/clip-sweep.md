@@ -107,6 +107,8 @@ The Rukhanka driver is not package source (the package carries no Rukhanka code,
 
 Cause of the GPU flakes: on Linux a `-batchmode` Editor picks OpenGLCore (log: "Creating OpenGL 4.5 graphics device", Direct threading); the windowed Editor runs Vulkan. On OpenGLCore, from a fresh Editor, SA.Tests passed the first run and failed 3 of the next 5 (`ReorderedSharedClipsHaveIndependentCpuAndGpuPlayback` 0.6 off, `SkinningSystemInitializesTheSentinelBeforeAnySkinIsLoaded` all zeros, `SkinningSystemRegistersSharedAndChangedAssetTables`). A probe of the exact ReorderedSharedClips GPU path read back a rest pose in 2 of 480 dispatches on OpenGLCore (the Motions buffer written through the CommandBuffer arrived empty; `AsyncGPUReadback` and a second `GetData` fail the same) and 0 of 480 on Vulkan. Not the Editor's age: it failed minutes after a fresh start. Fix: the sweep project lists Vulkan for Linux, and the GPU readback tests skip with the reason on OpenGLCore (`TestRigs.RequireGpu`, `RequireReliableReadback`). On Vulkan: 5 of 5 SA.Tests runs passed (108/108 before the new tests, then 110/110 with them, including the 2 new tests). The `Unity Data Store service ... is no longer running` failure (earlier session log, during `SkinningShaderTests`) is the Editor's Data Store child process dying mid-run; the Test Framework fails whichever test logs then. It did not occur in this session; stop Editors by pid, never `pkill -f` on a project path (it matches that child).
 
+0.3.6 receipts (sweep project on Vulkan, com.sa.unity `2439411`, Editor quit and started fresh, then three runs in a row with no restart): SA.Tests **111/111, 111/111, 111/111** (0 skipped, so the GPU readback tests ran; a fourth run 111/111). Before this, SA.Tests on 0.3.5 did not compile (failure 12) and a batchmode Editor with com.sa.unity in `testables` exits at start with "Scripts have compiler errors". In the same Editor, sa-inbetween's packages as `file:` from its `feat/finish` worktree: `SA.Inbetween.Clips.Tests` 41 passed, 0 failed, 4 skipped with their reasons (the real-asset tests look for TestingAssets paths `Assets/Synty/...` and `Assets/InbetweenDemo/MidAirJump.saclip` and for the generator tools with the NVIDIA model, and the FBX test needs `com.unity.formats.fbx`); `SA.Inbetween.Timeline.Tests` 27/27. Making them compile there found that `com.sa.inbetween.sa` 0.9.0 did not compile without the FBX Exporter package (`SaClipFbxExport` used `EditorSceneManager` outside `#if SA_FBX`) and shipped no `.meta` files, so a Git or tarball install ignores its assets; both fixed in sa-inbetween 0.9.1.
+
 ## Failures found and fixed
 
 | # | Root cause (class) | Symptom before the fix | Fix |
@@ -141,13 +143,8 @@ Cause of the GPU flakes: on Linux a `-batchmode` Editor picks OpenGLCore (log: "
 
 ## Remaining
 
-Done on `feat/closeout2` (not pushed): per-bone twist option and its test; tightened jump rule with source evidence and its test; GPU test isolation; whole-corpus Play-mode SA/Rukhanka run on Synty and Neophyte (`~/sweep-project/SweepResults/conformance_full_b00..b06.csv`, 22112 rows).
+Done in 0.3.6: the final 9-character sweep on all 1382 clips; the `EllenCombo3` and `KnockDown_Front` in-between errors traced to spins across a frame boundary and fixed in the jump rule, with a test; fixed-rate 1x/2x/4x rows under the new rule; SA.Tests 3 clean runs in a row from a fresh Editor; SA.Inbetween tests against the sweep project.
 
-Not done (usage limit):
-1. The final 9-character sweep stopped at 1243 of 1382 clips (11187 rows, all pass; `~/sweep-project/SweepResults/sweep_final.csv`, copy `/tmp/claude-1000/sp/sweep_final_partial.csv`). Rerun `FamilyClipSweep.Run(..., 0f)` to completion and update the Result numbers and `docs/clip-sweep-summary.csv` (still the 0.3.4 numbers).
-2. Not analysed: `EllenCombo3` in-between 28.4 deg on RightEye (Ellen, Terraformer, Sidekick), outside jumps.
-3. SA.Tests 3 runs in a row from a fresh Editor start on the final committed code: not run after the last edits (5 of 5 clean runs on Vulkan were on earlier states of this branch, the last one with all code changes except docs).
-4. `SA.Inbetween.Clips` tests: not run (the sweep project embeds only its Runtime; the full package is `~/GitHub/sa/sa-inbetween/unity/com.sa.inbetween.sa`).
-5. Fixed-rate 1x/2x/4x rows were not rerun under the new jump rule.
-6. 3 clips Rukhanka plays differently from Unity outside twist (60 Hz root/hips resampling, Loop Pose), so SA.PerBoneTwist vs Rukhanka is 1379/1382, not 1382/1382; SA does not copy those Rukhanka artifacts.
-7. The sweep project's batchmode Editor was stopped by pid (SIGKILL after a SIGTERM did not end it within 23 s).
+Still open, outside SA's sampling:
+1. 3 clips Rukhanka plays differently from Unity outside twist (60 Hz root/hips resampling, Loop Pose), so SA.PerBoneTwist vs Rukhanka is 1379/1382, not 1382/1382; SA does not copy those Rukhanka artifacts.
+2. Not verified here: a Windows run of the sa-inbetween tools zip, SA.Shape SH4/wardrobe, the ghost start/goal poses in the mesh preview, and the 4 real-asset SA.Inbetween tests, which need the TestingAssets layout and the NVIDIA model.
