@@ -3,7 +3,6 @@ using NUnit.Framework;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
-using UnityEngine;
 using UnityEngine.Rendering;
 
 namespace SA.Tests
@@ -50,14 +49,14 @@ namespace SA.Tests
 
         public static void RequireGpu()
         {
-            if (!SystemInfo.supportsComputeShaders)
+            if (!UnityEngine.SystemInfo.supportsComputeShaders)
                 Assert.Ignore("compute shaders unavailable");
             RequireReliableReadback();
         }
 
         public static void RequireReliableReadback()
         {
-            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLCore)
+            if (UnityEngine.SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLCore)
                 Assert.Ignore(OpenGlReadback);
         }
 

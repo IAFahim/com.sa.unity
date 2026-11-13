@@ -1012,6 +1012,67 @@ namespace SA.Tests
             }
         }
 
+        static AnimationClip KeyedMuscleClip(string name, params (string muscle, (float time, float value)[] keys)[] muscles)
+        {
+            var clip = new AnimationClip { name = name, frameRate = Hz };
+            foreach (var (muscle, keys) in muscles)
+            {
+                var curve = new AnimationCurve();
+                foreach (var (time, value) in keys)
+                    curve.AddKey(time, value);
+                for (var k = 0; k < curve.length; k++)
+                {
+                    AnimationUtility.SetKeyLeftTangentMode(curve, k, AnimationUtility.TangentMode.Linear);
+                    AnimationUtility.SetKeyRightTangentMode(curve, k, AnimationUtility.TangentMode.Linear);
+                }
+                AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), muscle), curve);
+            }
+            return clip;
+        }
+
+        [Test]
+        public void JumpRuleCoversATurnThatCrossesAFrameBoundary()
+        {
+            var rig = HumanoidRig(0.5f, out var avatar);
+            var clips = new List<AnimationClip>();
+            FamilyRigPlan plan = null;
+            try
+            {
+                Assert.IsTrue(FamilyClips.TryPlan(rig, out plan, out var error), error);
+                var report = new StringBuilder(FamilyClipSweep.Header + "\n");
+                var framesWithANeighbour = 0;
+                for (var eighth = 0; eighth < 8; eighth++)
+                {
+                    var spinStart = (10f + eighth / 8f) / Hz;
+                    var clip = KeyedMuscleClip("W1HeadSpin" + eighth,
+                        ("Head Nod Down-Up", new[] { (0f, -4.44f), (1f, -4.44f) }),
+                        ("Head Tilt Left-Right", new[] { (0f, 8.5f), (spinStart, 8.5f), (spinStart + 1f / Hz, 4.05f), (spinStart + 2f / Hz, -0.04f), (1f, -0.04f) }));
+                    clips.Add(clip);
+                    var row = new ClipSweepRow { Take = clip.name };
+                    Assert.IsTrue(FamilyClipSweep.TryMeasure(plan, clip, Hz, 1f, ClipSweepLimits.Default, row, out error), error);
+                    report.Append(FamilyClipSweep.ToCsv(row)).Append('\n');
+                    Assert.AreEqual(FamilyClipSweep.Pass, row.Status, row.Reason);
+                    Assert.GreaterOrEqual(row.JumpIntervals, 1, clip.name);
+                    Assert.Greater(row.MidJumpDegrees, FamilyClips.InBetweenDegrees, clip.name);
+                    Assert.LessOrEqual(row.MidDegrees, FamilyClips.InBetweenDegrees + 0.1f, clip.name + " " + row.MidWorst);
+                    StringAssert.StartsWith(FamilyClipSweep.BeyondLimit + ":" + row.JumpIntervals + "@", row.JumpKinds, clip.name);
+                    StringAssert.Contains("Head Tilt Left-Right", row.JumpEvidence, clip.name);
+                    if (row.JumpIntervals > 1)
+                        framesWithANeighbour++;
+                }
+                Report("jump-boundary", report.ToString());
+                Assert.Greater(framesWithANeighbour, 0, report.ToString());
+            }
+            finally
+            {
+                plan?.Dispose();
+                foreach (var clip in clips)
+                    UnityEngine.Object.DestroyImmediate(clip);
+                UnityEngine.Object.DestroyImmediate(rig);
+                UnityEngine.Object.DestroyImmediate(avatar);
+            }
+        }
+
         [Test, Explicit, Category("RealAssets")]
         public void CorpusSweepPassesEveryHumanoidClip()
         {

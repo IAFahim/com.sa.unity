@@ -450,31 +450,48 @@ namespace SA.Editor
             {
                 if (!candidates[j])
                     continue;
-                if (probed != null && probed.TryGetValue(j, out var known))
-                {
-                    jumps[j] = known;
+                if (probed != null && probed.ContainsKey(j))
                     continue;
-                }
                 pending.Add(j);
             }
-            if (pending.Count == 0)
+            if (pending.Count > 0 && !TryProbeJumps(plan, clip, intervals, pending, jumps, stepDegrees, stepBone, out error))
+                return false;
+            if (probed == null)
                 return true;
+            foreach (var j in pending)
+            {
+                probed[j] = probed.TryGetValue(j, out var marked) && marked || jumps[j];
+                if (j > 0 && jumps[j - 1])
+                    probed[j - 1] = true;
+                if (j + 1 < intervals && jumps[j + 1])
+                    probed[j + 1] = true;
+            }
+            foreach (var pair in probed)
+                if (pair.Value && pair.Key >= 0 && pair.Key < intervals)
+                    jumps[pair.Key] = true;
+            return true;
+        }
+
+        static bool TryProbeJumps(FamilyRigPlan plan, AnimationClip clip, int intervals, List<int> pending, bool[] jumps, float[] stepDegrees, int[] stepBone,
+            out string error)
+        {
             var steps = JumpProbeSteps;
-            var times = new double[pending.Count * (steps + 1)];
+            var samples = steps + 3;
+            var times = new double[pending.Count * samples];
             for (var p = 0; p < pending.Count; p++)
-                for (var k = 0; k <= steps; k++)
-                    times[p * (steps + 1) + k] = Math.Min(clip.length, clip.length * (pending[p] + k / (double)steps) / intervals);
+                for (var k = -1; k <= steps + 1; k++)
+                    times[p * samples + k + 1] = Math.Max(0.0, Math.Min(clip.length, clip.length * (pending[p] + k / (double)steps) / intervals));
             if (!TrySampleBonesAt(plan, clip, times, out var locals, out error))
                 return false;
             var count = plan.bones.Length;
             var frame = new Pose[count];
-            var model = new RigidPose[(steps + 1) * count];
+            var model = new RigidPose[samples * count];
             var scratch = new RigidPose[count];
             for (var p = 0; p < pending.Count; p++)
             {
-                for (var k = 0; k <= steps; k++)
+                for (var k = 0; k < samples; k++)
                 {
-                    Array.Copy(locals, (p * (steps + 1) + k) * count, frame, 0, count);
+                    Array.Copy(locals, (p * samples + k) * count, frame, 0, count);
                     if (RigidMath.Model(plan.parents, frame, scratch) != AnimationError.None)
                     {
                         error = "jump probe pose failed to compose.";
@@ -483,22 +500,26 @@ namespace SA.Editor
                     Array.Copy(scratch, 0, model, k * count, count);
                 }
                 var j = pending[p];
-                for (var k = 0; k + 2 <= steps; k += 2)
+                for (var k = 0; k + 2 < samples; k++)
                     for (var b = 1; b < count; b++)
                     {
                         if (plan.canonicalOfBone[b] <= 0)
                             continue;
                         var turn = FamilyClipSweep.Degrees(model[k * count + b].Rotation, model[(k + 1) * count + b].Rotation)
                             + FamilyClipSweep.Degrees(model[(k + 1) * count + b].Rotation, model[(k + 2) * count + b].Rotation);
-                        if (turn > stepDegrees[j])
+                        var first = k == 0 ? Math.Max(0, j - 1) : j;
+                        var last = k + 2 == samples - 1 ? Math.Min(intervals - 1, j + 1) : j;
+                        for (var overlapped = first; overlapped <= last; overlapped++)
                         {
-                            stepDegrees[j] = turn;
-                            stepBone[j] = b;
+                            if (turn > stepDegrees[overlapped])
+                            {
+                                stepDegrees[overlapped] = turn;
+                                stepBone[overlapped] = b;
+                            }
+                            if (turn > JumpDegrees)
+                                jumps[overlapped] = true;
                         }
                     }
-                jumps[j] = stepDegrees[j] > JumpDegrees;
-                if (probed != null)
-                    probed[j] = jumps[j];
             }
             return true;
         }

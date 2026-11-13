@@ -1,5 +1,12 @@
-Unreleased
-----------
+0.3.6
+-----
+
+- Unity jump rule: the probe also tests the windows of one top-rate step that straddle a clip frame's ends (one half-step before and after the frame), and a window over 90 deg leaves out every frame it overlaps. A spin that peaks at a frame boundary no longer leaves its tail in the next frame's in-between: `EllenCombo3` RightEye 28.4 to 0.43 deg, `KnockDown_Front` Head 5.75 to 1.28 deg; every left-out frame on the corpus still has a muscle beyond its limit. Test `JumpRuleCoversATurnThatCrossesAFrameBoundary`.
+- SA.Tests compile again: `TestRigs` no longer imports `UnityEngine` next to `Unity.Entities` (`Hash128` was ambiguous in 0.3.5).
+- `docs/clip-sweep.md`: final 9-character sweep of all 1382 Humanoid clips and fixed-rate 1x/2x/4x rows under the new rule.
+
+0.3.1 to 0.3.5
+--------------
 
 - Per-bone twist option: `FamilyClips.TryPlan(character, HumanoidTwist.PerBone, ...)` and `SharedFamilyAuthoring.Twist` sample a Humanoid clip through a copy of the avatar whose upper/lower arm and leg twist settings are 1, so each twist muscle turns its own bone only. That is how engines that ignore the avatar twist settings play Humanoid clips; the default (`HumanoidTwist.Avatar`) stays Unity's Animator. `FamilyRigPlan` is now `IDisposable` (it owns that hidden avatar); `FamilyClips.PerBoneTwistAvatar` and `FamilyClips.SamplingCopy` are public. `FamilyClipSweep.Run` takes the twist mode.
 - Unity jump rule: an in-between interval is left out only when Unity itself turns a mapped bone more than 90 deg within one sample step of the top rate (1/(8 x clip fps) s), measured by `FamilyClips.TryUnityJumps` inside every clip frame whose sampled path exceeds 90 deg. The old rule (90 deg along a whole clip frame) also left out fast spins that 4x and 8x follow; those now raise the sample rate like any other motion.
