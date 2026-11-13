@@ -19,9 +19,11 @@ namespace SA.Tests
     {
         const string Prefix = "mixamorig:";
         const float Hz = 30f;
-        const string SyntyCharacter = "Assets/Synty/AnimationBaseLocomotion/Meshes/PolygonSyntyCharacter.fbx";
-        const string SyntyClips = "Assets/Synty/AnimationBaseLocomotion/Animations/Polygon/Masculine/InAir/";
-        const string NeophyteCharacter = "Assets/zz_w1_test/Neophyte_RIG.fbx";
+        const string SyntyCharacter = "PolygonSyntyCharacter.fbx";
+        const string NeophyteCharacter = "Neophyte_RIG.fbx";
+        const string SyntyJump = "A_Jump_Walking_RootMotionVertical_Masc.fbx";
+        const string SyntyJumpInPlace = "A_Jump_Walking_Masc.fbx";
+        const string SyntyJumpMoving = "A_Jump_Walking_RootMotion_Masc.fbx";
 
         static readonly string[] Fingers = { "Thumb", "Index", "Middle", "Ring", "Pinky" };
 
@@ -216,7 +218,7 @@ namespace SA.Tests
         static RoundTrip Measure(FamilyRigPlan plan, AnimationClip clip, bool encode, bool lossless)
         {
             Assert.IsTrue(FamilyClips.TrySampleBones(plan, clip, Hz, out var direct, out var frames, out var error), error);
-            Assert.IsTrue(FamilyClips.TrySample(plan, clip, Hz, out var canonical, out var root, out var start, out var sampled, out error), error);
+            Assert.IsTrue(FamilyClips.TrySampleFixed(plan, clip, Hz, out var canonical, out var root, out var start, out var sampled, out error), error);
             Assert.AreEqual(frames, sampled);
             Assert.AreEqual(frames, root.Length);
             if (encode)
@@ -229,7 +231,7 @@ namespace SA.Tests
                 var probe = new Pose[FamilyClips.CanonicalBones];
                 for (var f = 0; f < frames; f++)
                 {
-                    Assert.AreEqual(AnimationError.None, loaded.Sample(f / (double)Hz, reference, probe));
+                    Assert.AreEqual(AnimationError.None, loaded.Sample(loaded.Duration * f / (frames - 1), reference, probe));
                     Array.Copy(probe, 0, canonical, f * FamilyClips.CanonicalBones, FamilyClips.CanonicalBones);
                     root[f] = loaded.Root[f];
                 }
@@ -355,7 +357,7 @@ namespace SA.Tests
             {
                 Assert.IsTrue(FamilyClips.TryPlan(rig, out var plan, out var error), error);
                 var clip = SyntheticClip(lookup, rig.transform);
-                Assert.IsTrue(FamilyClips.TrySample(plan, clip, Hz, out var canonical, out var root, out var frames, out error), error);
+                Assert.IsTrue(FamilyClips.TrySampleFixed(plan, clip, Hz, out var canonical, out var root, out _, out var frames, out error), error);
                 Assert.AreEqual(31, frames);
                 Assert.AreEqual(0f, root[0].Position.X);
                 Assert.AreEqual(1f, Math.Abs(root[0].Rotation.W));
@@ -445,8 +447,40 @@ namespace SA.Tests
             return null;
         }
 
-        static GameObject Spawn(string path)
+        static string FindModel(string fileName)
         {
+            var stem = Path.GetFileNameWithoutExtension(fileName);
+            var found = new List<string>();
+            foreach (var guid in AssetDatabase.FindAssets(stem + " t:Model"))
+            {
+                var path = AssetDatabase.GUIDToAssetPath(guid);
+                if (string.Equals(Path.GetFileName(path), fileName, StringComparison.OrdinalIgnoreCase))
+                    found.Add(path);
+            }
+            found.Sort(StringComparer.Ordinal);
+            return found.Count > 0 ? found[0] : null;
+        }
+
+        static string RequireModel(string fileName)
+        {
+            var path = FindModel(fileName);
+            if (path == null)
+                Assert.Ignore(fileName + " is not in this project (searched every model in Assets and Packages); import the Synty Animation Base Locomotion pack or the Neophyte character to run this test.");
+            return path;
+        }
+
+        static AnimationClip RequireTake(string fileName, string take)
+        {
+            var path = RequireModel(fileName);
+            var clip = Take(path, take);
+            if (clip == null)
+                Assert.Ignore(path + " has no take named " + take + ".");
+            return clip;
+        }
+
+        static GameObject Spawn(string fileName)
+        {
+            var path = RequireModel(fileName);
             var asset = AssetDatabase.LoadAssetAtPath<GameObject>(path);
             if (asset == null)
                 Assert.Ignore("asset missing: " + path);
@@ -491,9 +525,7 @@ namespace SA.Tests
         [Test, Category("RealAssets")]
         public void SyntyJumpRoundTrip()
         {
-            var clip = Take(SyntyClips + "A_Jump_Walking_RootMotionVertical_Masc.fbx", "A_Jump_Walking_RootMotionVertical_Masc_Full");
-            if (clip == null)
-                Assert.Ignore("Synty jump clip missing");
+            var clip = RequireTake(SyntyJump, "A_Jump_Walking_RootMotionVertical_Masc_Full");
             var character = Spawn(SyntyCharacter);
             try
             {
@@ -501,7 +533,7 @@ namespace SA.Tests
                 AssertRequired(plan);
                 var raw = Measure(plan, clip, false, true);
                 var packed = Measure(plan, clip, true, false);
-                Assert.IsTrue(FamilyClips.TrySample(plan, clip, Hz, out var canonical, out var root, out var frames, out error), error);
+                Assert.IsTrue(FamilyClips.TrySampleFixed(plan, clip, Hz, out _, out var root, out _, out var frames, out error), error);
                 var last = root[frames - 1];
                 var report = PlanSummary(plan) + Describe("I1 sample->apply", raw) + Describe("I1 packed .saclip", packed)
                     + "planar root travel " + Math.Sqrt(last.Position.X * last.Position.X + last.Position.Z * last.Position.Z).ToString("0.000", CultureInfo.InvariantCulture)
@@ -519,12 +551,14 @@ namespace SA.Tests
 
         static string RootMotionVariants(FamilyRigPlan plan)
         {
-            var inPlace = Take(SyntyClips + "A_Jump_Walking_Masc.fbx", "A_Jump_Walking_Masc");
-            var moving = Take(SyntyClips + "A_Jump_Walking_RootMotion_Masc.fbx", "A_Jump_Walking_RootMotion_Masc");
+            var inPlacePath = FindModel(SyntyJumpInPlace);
+            var movingPath = FindModel(SyntyJumpMoving);
+            var inPlace = inPlacePath != null ? Take(inPlacePath, "A_Jump_Walking_Masc") : null;
+            var moving = movingPath != null ? Take(movingPath, "A_Jump_Walking_RootMotion_Masc") : null;
             if (inPlace == null || moving == null)
                 return "R17 variants missing\n";
-            Assert.IsTrue(FamilyClips.TrySample(plan, inPlace, Hz, out var a, out var rootA, out var framesA, out var error), error);
-            Assert.IsTrue(FamilyClips.TrySample(plan, moving, Hz, out var b, out var rootB, out var framesB, out error), error);
+            Assert.IsTrue(FamilyClips.TrySampleFixed(plan, inPlace, Hz, out var a, out var rootA, out _, out var framesA, out var error), error);
+            Assert.IsTrue(FamilyClips.TrySampleFixed(plan, moving, Hz, out var b, out var rootB, out _, out var framesB, out error), error);
             var frames = Math.Min(framesA, framesB);
             var degrees = 0f;
             var metres = 0f;
@@ -556,9 +590,7 @@ namespace SA.Tests
         [Test, Category("RealAssets")]
         public void NeophyteMixamoMapAndRoundTrip()
         {
-            var clip = Take(SyntyClips + "A_Jump_Walking_RootMotionVertical_Masc.fbx", "A_Jump_Walking_RootMotionVertical_Masc_Full");
-            if (clip == null)
-                Assert.Ignore("Synty jump clip missing");
+            var clip = RequireTake(SyntyJump, "A_Jump_Walking_RootMotionVertical_Masc_Full");
             var character = Spawn(NeophyteCharacter);
             try
             {
@@ -649,6 +681,65 @@ namespace SA.Tests
             finally
             {
                 UnityEngine.Object.DestroyImmediate(clip);
+            }
+        }
+
+        [Test]
+        public void AdaptiveSamplingRaisesTheRateOnlyWhereInBetweensMissUnity()
+        {
+            var rig = MixamoRig(out var lookup);
+            AnimationClip slow = null;
+            AnimationClip fast = null;
+            try
+            {
+                Assert.IsTrue(FamilyClips.TryPlan(rig, out var plan, out var error), error);
+                slow = SyntheticClip(lookup, rig.transform);
+                fast = SyntheticClip(lookup, rig.transform);
+                fast.name = "W1Fast";
+                var arm = lookup["LeftForeArm"];
+                var rest = arm.localRotation;
+                AddCurves(fast, AnimationUtility.CalculateTransformPath(arm, rig.transform), null,
+                    t => rest * UnityEngine.Quaternion.AngleAxis(80f * Mathf.Sin(2f * Mathf.PI * 4f * t), Vector3.forward), 1f);
+                foreach (var binding in AnimationUtility.GetCurveBindings(fast))
+                {
+                    var curve = AnimationUtility.GetEditorCurve(fast, binding);
+                    for (var k = 0; k < curve.length; k++)
+                    {
+                        AnimationUtility.SetKeyLeftTangentMode(curve, k, AnimationUtility.TangentMode.Auto);
+                        AnimationUtility.SetKeyRightTangentMode(curve, k, AnimationUtility.TangentMode.Auto);
+                    }
+                    AnimationUtility.SetEditorCurve(fast, binding, curve);
+                }
+                Assert.IsTrue(FamilyClips.TrySampleAdaptive(plan, slow, Hz, FamilyClips.InBetweenDegrees, FamilyClips.MaxRateMultiplier,
+                    out _, out _, out _, out var slowFrames, out var slowReport, out error), error);
+                Assert.IsTrue(FamilyClips.TrySampleAdaptive(plan, fast, Hz, FamilyClips.InBetweenDegrees, FamilyClips.MaxRateMultiplier,
+                    out var canonical, out var root, out _, out var fastFrames, out var fastReport, out error), error);
+                Report("adaptive", "slow x" + slowReport.Multiplier + " " + slowFrames + " frames, est " + slowReport.InBetweenDegrees + " deg; fast x"
+                    + fastReport.Multiplier + " " + fastFrames + " frames, est " + fastReport.InBetweenDegrees + " deg\n");
+                Assert.AreEqual(1, slowReport.Multiplier);
+                Assert.AreEqual(31, slowFrames);
+                Assert.GreaterOrEqual(fastReport.Multiplier, 2);
+                Assert.AreEqual(fastReport.Multiplier * 30 + 1, fastFrames);
+                Assert.IsTrue(FamilyClips.TryEncode(plan, canonical, root, Hz, out var bytes, out error), error);
+                Assert.AreEqual(AnimationError.None, SharedClipReader.Load(bytes, plan.Family, SharedFamilyBake.CanonicalReferencePoses(), out var loaded));
+                Assert.AreEqual(fast.length, loaded.Duration, 1e-6, "TryEncode(hz) keeps the clip length after adaptive sampling");
+                var fixedRow = new ClipSweepRow();
+                Assert.IsTrue(FamilyClipSweep.TryMeasure(plan, fast, Hz, 1, 1f, ClipSweepLimits.Default, fixedRow, out error), error);
+                var adaptiveRow = new ClipSweepRow();
+                Assert.IsTrue(FamilyClipSweep.TryMeasure(plan, fast, Hz, 1f, ClipSweepLimits.Default, adaptiveRow, out error), error);
+                Report("adaptive-sweep", FamilyClipSweep.Header + "\n" + FamilyClipSweep.ToCsv(fixedRow) + "\n" + FamilyClipSweep.ToCsv(adaptiveRow) + "\n");
+                Assert.AreEqual(FamilyClipSweep.Pass, fixedRow.Status, fixedRow.Reason);
+                Assert.AreEqual(FamilyClipSweep.Pass, adaptiveRow.Status, adaptiveRow.Reason);
+                Assert.Greater(fixedRow.MidDegrees, FamilyClips.InBetweenDegrees);
+                Assert.LessOrEqual(adaptiveRow.MidDegrees, FamilyClips.InBetweenDegrees + 0.1f, adaptiveRow.MidWorst);
+            }
+            finally
+            {
+                if (slow != null)
+                    UnityEngine.Object.DestroyImmediate(slow);
+                if (fast != null)
+                    UnityEngine.Object.DestroyImmediate(fast);
+                UnityEngine.Object.DestroyImmediate(rig);
             }
         }
 

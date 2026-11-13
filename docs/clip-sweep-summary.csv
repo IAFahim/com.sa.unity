@@ -1,16 +1,48 @@
-section,key,rows,passed,failed,worst_deg,worst_cm,worst_root_cm,worst_root_deg,mid_p50_deg,mid_p90_deg,mid_le_1deg_fraction,mean_bytes
-character,PolygonSyntyCharacter,1382,1382,0,0.01187,0.00944,0.00021,0.00005,2.153,7.184,0.158,27852
-character,Neophyte_RIG,1382,1382,0,0.01214,0.00947,0.00024,0.00007,2.163,7.159,0.158,32009
-character,EllenHumanoid,1382,1382,0,0.01228,0.00817,0.00032,0.00006,2.140,7.118,0.158,33249
-character,TerraformerHumanoid,1382,1382,0,0.01220,0.00828,0.00020,0.00004,2.173,7.573,0.153,32642
-character,SidekickSyntyCharacter,1382,1382,0,0.01152,0.00938,0.00018,0.00009,2.149,6.947,0.156,33249
-character,Grruzam_Modeling_Fighter,1382,1382,0,0.01221,0.00825,0.00014,0.00005,2.139,7.146,0.160,32672
-character,Armature_Humanoid,1382,1382,0,0.01208,0.00814,0.00017,0.00006,2.189,7.562,0.154,32618
-character,PolygonSyntyCharacter@x1.7,1382,1382,0,0.01187,0.01606,0.00049,0.00005,2.153,7.184,0.158,27852
-character,Neophyte_RIG@x0.6,1382,1382,0,0.01214,0.00568,0.00017,0.00007,2.163,7.159,0.158,32009
-rate,1x,12438,12438,0,0.01228,0.01606,0.00049,0.00009,2.153,7.209,0.157,31573
-rate,2x,12438,12438,0,0.01242,0.01676,0.00049,0.00030,1.139,4.513,0.444,58304
-rate,4x,12438,12438,0,0.01339,0.01787,0.00065,0.00030,0.439,1.841,0.768,111819
-runtime,PolygonSyntyCharacter,58,58,0,0.01013,0.00913,,,0.000055,,,
-clips,humanoid,1382,,,,,,,,,,
-clips,nonhumanoid,190,,,,,,,,,,
+section,key,rows,passed,failed,worst_deg,worst_cm,worst_root_cm,worst_root_deg,mid_p50_deg,mid_p90_deg,mid_p99_deg,mid_worst_deg,mid_le_1deg_fraction,mid_le_2deg_fraction,mean_bytes,mean_rate_x,rows_with_jumps_fraction
+character,PolygonSyntyCharacter,1382,1382,0,0.01230,0.01013,0.00021,0.00014,0.897,1.347,1.472,1.565,0.590,1.000,68547,2.67,0.212
+character,Neophyte_RIG,1382,1382,0,0.01256,0.01216,0.00027,0.00016,0.874,1.346,1.476,1.689,0.605,1.000,81903,2.71,0.213
+character,EllenHumanoid,1382,1382,0,0.01228,0.00942,0.00032,0.00031,0.873,1.348,1.477,1.519,0.609,1.000,85380,2.72,0.213
+character,TerraformerHumanoid,1382,1382,0,0.01244,0.01038,0.00020,0.00015,0.867,1.361,1.491,1.532,0.600,1.000,84718,2.74,0.214
+character,SidekickSyntyCharacter,1382,1382,0,0.01250,0.01072,0.00020,0.00021,0.871,1.351,1.487,1.503,0.606,1.000,85944,2.73,0.211
+character,Grruzam_Modeling_Fighter,1382,1382,0,0.01224,0.01160,0.00019,0.00014,0.866,1.345,1.481,1.553,0.603,1.000,83734,2.71,0.217
+character,Armature_Humanoid,1382,1382,0,0.01235,0.01131,0.00022,0.00014,0.862,1.357,1.484,1.492,0.603,1.000,84902,2.75,0.208
+character,PolygonSyntyCharacter@x1.7,1382,1382,0,0.01230,0.01723,0.00065,0.00014,0.897,1.347,1.472,1.565,0.590,1.000,68547,2.67,0.212
+character,Neophyte_RIG@x0.6,1382,1382,0,0.01256,0.00729,0.00017,0.00016,0.874,1.346,1.476,1.689,0.605,1.000,81903,2.71,0.213
+rate,1x,12438,12438,0,0.01228,0.01606,0.00049,0.00009,2.141,7.045,16.541,37.156,0.160,0.445,31573,1.00,0.211
+rate,2x,12438,12438,0,0.01242,0.01676,0.00049,0.00030,1.076,3.216,7.032,15.600,0.461,0.763,58325,2.00,0.213
+rate,4x,12438,12438,0,0.01339,0.01787,0.00065,0.00030,0.416,1.333,2.593,6.868,0.833,0.980,111859,4.00,0.213
+rate,adaptive (default),12438,12438,0,0.01256,0.01723,0.00065,0.00031,0.873,1.351,1.482,1.689,0.601,1.000,80620,2.71,0.213
+clips,humanoid,1382
+clips,nonhumanoid,190
+rate_x_distribution,1:3303;2:4889;4:3326;8:920
+playmode_sa_vs_unity,PolygonSyntyCharacter,59,59,0,0.01786,0.02883,,,,,,,,,,,
+rukhanka_vs_unity,PolygonSyntyCharacter,59,1,58,89.78316,0.05376,,,,,,,,,,,
+sa_vs_rukhanka,PolygonSyntyCharacter,59,1,58,89.78316,0.05354,,,,,,,,,,,
+playmode_sa_vs_unity,Neophyte_RIG,59,59,0,0.01899,0.03249,,,,,,,,,,,
+rukhanka_vs_unity,Neophyte_RIG,59,1,58,89.78314,0.07175,,,,,,,,,,,
+sa_vs_rukhanka,Neophyte_RIG,59,1,58,89.78315,0.07290,,,,,,,,,,,
+playmode_sa_vs_unity,EllenHumanoid,59,59,0,0.04290,0.02571,,,,,,,,,,,
+rukhanka_vs_unity,EllenHumanoid,59,1,58,89.78319,0.06371,,,,,,,,,,,
+sa_vs_rukhanka,EllenHumanoid,59,1,58,89.78321,0.06478,,,,,,,,,,,
+playmode_sa_vs_unity,PolygonSyntyTwist0,59,59,0,0.01811,0.02843,,,,,,,,,,,
+rukhanka_vs_unity,PolygonSyntyTwist0,59,1,58,179.56630,0.05374,,,,,,,,,,,
+sa_vs_rukhanka,PolygonSyntyTwist0,59,1,58,179.56630,0.05505,,,,,,,,,,,
+playmode_sa_vs_unity,PolygonSyntyTwist1,59,59,0,0.01734,0.02927,,,,,,,,,,,
+rukhanka_vs_unity,PolygonSyntyTwist1,59,59,0,0.03763,0.05374,,,,,,,,,,,
+sa_vs_rukhanka,PolygonSyntyTwist1,59,59,0,0.03950,0.05285,,,,,,,,,,,
+section,key,rows,frames,worst_deg_outside_twist_bones
+twist_split,SA PolygonSyntyCharacter,59,2593,0.01037
+twist_split,Rukhanka PolygonSyntyCharacter,59,2593,0.03763
+twist_split,SA-vs-Rukhanka PolygonSyntyCharacter,59,2593,0.04040
+twist_split,SA Neophyte_RIG,59,2593,0.01084
+twist_split,Rukhanka Neophyte_RIG,59,2593,0.03740
+twist_split,SA-vs-Rukhanka Neophyte_RIG,59,2593,0.03865
+twist_split,SA EllenHumanoid,59,2593,0.04290
+twist_split,Rukhanka EllenHumanoid,59,2593,0.06423
+twist_split,SA-vs-Rukhanka EllenHumanoid,59,2593,0.06671
+twist_split,SA PolygonSyntyTwist0,59,2593,0.01020
+twist_split,Rukhanka PolygonSyntyTwist0,59,2593,0.03763
+twist_split,SA-vs-Rukhanka PolygonSyntyTwist0,59,2593,0.03968
+twist_split,SA PolygonSyntyTwist1,59,2593,0.01097
+twist_split,Rukhanka PolygonSyntyTwist1,59,2593,0.03762
+twist_split,SA-vs-Rukhanka PolygonSyntyTwist1,59,2593,0.03950

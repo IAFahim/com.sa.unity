@@ -57,11 +57,39 @@ namespace SA.Editor
         public AssetId Target => target;
     }
 
+    public readonly struct AdaptiveSampling
+    {
+        public readonly float BaseHz;
+        public readonly int Multiplier;
+        public readonly int BaseFrames;
+        public readonly int Frames;
+        public readonly float InBetweenDegrees;
+        public readonly int JumpIntervals;
+
+        public AdaptiveSampling(float baseHz, int multiplier, int baseFrames, int frames, float inBetweenDegrees, int jumpIntervals)
+        {
+            BaseHz = baseHz;
+            Multiplier = multiplier;
+            BaseFrames = baseFrames;
+            Frames = frames;
+            InBetweenDegrees = inBetweenDegrees;
+            JumpIntervals = jumpIntervals;
+        }
+
+        public float Hz => BaseHz * Multiplier;
+    }
+
     public static class FamilyClips
     {
         public const int CanonicalBones = SharedFamilyBake.CanonicalBones;
         public const float CalibrationWarningDegrees = 5f;
         public const float DefaultSampleRate = 30f;
+
+        public const float InBetweenDegrees = 1.5f;
+
+        public const int MaxRateMultiplier = 8;
+
+        public const float JumpDegrees = 90f;
 
         const float ScaleTolerance = 1e-4f;
         const int LeftUpperLeg = 48;
@@ -169,19 +197,236 @@ namespace SA.Editor
             return true;
         }
 
+        public static bool TrySample(FamilyRigPlan plan, AnimationClip clip, out Pose[] canonicalSamples, out RigidPose[] planarRoot,
+            out RigidPose start, out int frames, out string error) =>
+            TrySampleAdaptive(plan, clip, ClipRate(clip), InBetweenDegrees, MaxRateMultiplier, out canonicalSamples, out planarRoot, out start, out frames, out _, out error);
+
         public static bool TrySample(FamilyRigPlan plan, AnimationClip clip, float hz, out Pose[] canonicalSamples, out RigidPose[] planarRoot,
             out int frames, out string error) =>
             TrySample(plan, clip, hz, out canonicalSamples, out planarRoot, out _, out frames, out error);
 
         public static bool TrySample(FamilyRigPlan plan, AnimationClip clip, float hz, out Pose[] canonicalSamples, out RigidPose[] planarRoot,
+            out RigidPose start, out int frames, out string error) =>
+            TrySampleAdaptive(plan, clip, hz, InBetweenDegrees, MaxRateMultiplier, out canonicalSamples, out planarRoot, out start, out frames, out _, out error);
+
+        public static bool TrySampleFixed(FamilyRigPlan plan, AnimationClip clip, float hz, out Pose[] canonicalSamples, out RigidPose[] planarRoot,
             out RigidPose start, out int frames, out string error)
         {
             canonicalSamples = Array.Empty<Pose>();
             planarRoot = Array.Empty<RigidPose>();
             start = RigidPose.Identity;
-            if (!TrySampleBones(plan, clip, hz, out var locals, out frames, out error))
+            frames = 0;
+            if (!(hz > 0f) || !float.IsFinite(hz))
+            {
+                error = "sample rate must be positive.";
                 return false;
-            return TryCanonical(plan, locals, frames, out canonicalSamples, out planarRoot, out start, out error);
+            }
+            return TrySampleFrames(plan, clip, SampleCount(clip, hz), out canonicalSamples, out planarRoot, out start, out frames, out error);
+        }
+
+        public static bool TrySampleFrames(FamilyRigPlan plan, AnimationClip clip, int count, out Pose[] canonicalSamples, out RigidPose[] planarRoot,
+            out RigidPose start, out int frames, out string error)
+        {
+            canonicalSamples = Array.Empty<Pose>();
+            planarRoot = Array.Empty<RigidPose>();
+            start = RigidPose.Identity;
+            frames = Math.Max(2, count);
+            if (!TrySampleBonesAt(plan, clip, Grid(clip, frames, 1, false), out var locals, out error))
+                return false;
+            if (!TryCanonical(plan, locals, frames, out canonicalSamples, out planarRoot, out start, out error))
+                return false;
+            Remember(planarRoot, clip);
+            return true;
+        }
+
+        public static bool TrySampleAdaptive(FamilyRigPlan plan, AnimationClip clip, float baseHz, float toleranceDegrees, int maxMultiplier,
+            out Pose[] canonicalSamples, out RigidPose[] planarRoot, out RigidPose start, out int frames, out AdaptiveSampling report, out string error)
+        {
+            canonicalSamples = Array.Empty<Pose>();
+            planarRoot = Array.Empty<RigidPose>();
+            start = RigidPose.Identity;
+            frames = 0;
+            report = default;
+            if (!(baseHz > 0f) || !float.IsFinite(baseHz))
+            {
+                error = "sample rate must be positive.";
+                return false;
+            }
+            if (!(toleranceDegrees > 0f))
+                toleranceDegrees = InBetweenDegrees;
+            maxMultiplier = Math.Max(1, maxMultiplier);
+            var baseFrames = SampleCount(clip, baseHz);
+            if (!TrySampleBonesAt(plan, clip, Grid(clip, baseFrames, 1, false), out var locals, out error))
+                return false;
+            var count = plan.bones.Length;
+            var multiplier = 1;
+            var estimate = float.NaN;
+            var jumpCount = 0;
+            while (multiplier < maxMultiplier && clip.length > 0f)
+            {
+                var current = multiplier * (baseFrames - 1) + 1;
+                if (!TrySampleBonesAt(plan, clip, Grid(clip, current, 2, true), out var middles, out error))
+                    return false;
+                var finer = 2 * current - 1;
+                var merged = new Pose[finer * count];
+                for (var f = 0; f < finer; f++)
+                    Array.Copy((f & 1) == 0 ? locals : middles, (f >> 1) * count, merged, f * count, count);
+                KeepHemisphere(merged, finer, count);
+                if (!TryCanonical(plan, merged, finer, out var fineCanonical, out var fineRoot, out _, out error))
+                    return false;
+                var jumps = Jumps(fineCanonical, fineRoot, baseFrames, 2 * multiplier, plan.canonicalParents, out jumpCount);
+                if (!TryInBetween(plan, clip, fineCanonical, fineRoot, current, multiplier, jumps, out estimate, out error))
+                    return false;
+                if (estimate <= toleranceDegrees)
+                    break;
+                locals = merged;
+                multiplier *= 2;
+                estimate = float.NaN;
+            }
+            frames = multiplier * (baseFrames - 1) + 1;
+            if (!TryCanonical(plan, locals, frames, out canonicalSamples, out planarRoot, out start, out error))
+                return false;
+            Remember(planarRoot, clip);
+            report = new AdaptiveSampling(baseHz, multiplier, baseFrames, frames, estimate, jumpCount);
+            return true;
+        }
+
+        public static float ClipRate(AnimationClip clip)
+        {
+            if (clip == null)
+                return DefaultSampleRate;
+            var rate = clip.frameRate;
+            return rate >= 1f && rate <= 240f && float.IsFinite(rate) ? rate : DefaultSampleRate;
+        }
+
+        static double[] Grid(AnimationClip clip, int frames, int step, bool odd)
+        {
+            var total = odd ? (frames - 1) * step + 1 : frames;
+            var times = new double[odd ? frames - 1 : frames];
+            var length = clip != null && clip.length > 0f && float.IsFinite(clip.length) ? clip.length : 0.0;
+            for (var i = 0; i < times.Length; i++)
+            {
+                var index = odd ? 2 * i + 1 : i;
+                times[i] = index >= total - 1 ? length : length * index / (total - 1);
+            }
+            return times;
+        }
+
+        static void KeepHemisphere(Pose[] locals, int frames, int count)
+        {
+            for (var f = 1; f < frames; f++)
+                for (var b = 0; b < count; b++)
+                {
+                    ref var pose = ref locals[f * count + b];
+                    if (Quaternion.Dot(pose.Rotation, locals[(f - 1) * count + b].Rotation) < 0f)
+                        pose.Rotation = new Quaternion(-pose.Rotation.X, -pose.Rotation.Y, -pose.Rotation.Z, -pose.Rotation.W);
+                }
+        }
+
+        static void CanonicalModel(Pose[] canonical, int frame, RigidPose root, int[] parents, RigidPose[] model)
+        {
+            var offset = frame * CanonicalBones;
+            model[0] = root;
+            for (var c = 1; c < CanonicalBones; c++)
+            {
+                var parent = model[Math.Max(0, parents[c])];
+                var local = canonical[offset + c];
+                var rotation = Quaternion.Normalize(parent.Rotation);
+                model[c] = new RigidPose(parent.Position + Quaternion.Rotate(rotation, local.Position),
+                    Quaternion.Normalize(Quaternion.Multiply(rotation, Quaternion.Normalize(local.Rotation))));
+            }
+        }
+
+        static bool[] Jumps(Pose[] fineCanonical, RigidPose[] fineRoot, int baseFrames, int step, int[] parents, out int jumpCount)
+        {
+            jumpCount = 0;
+            var jumps = new bool[Math.Max(1, baseFrames - 1)];
+            var previous = new RigidPose[CanonicalBones];
+            var next = new RigidPose[CanonicalBones];
+            var path = new float[CanonicalBones];
+            CanonicalModel(fineCanonical, 0, fineRoot[0], parents, previous);
+            for (var j = 0; j + 1 < baseFrames; j++)
+            {
+                Array.Clear(path, 0, path.Length);
+                for (var f = j * step + 1; f <= (j + 1) * step; f++)
+                {
+                    CanonicalModel(fineCanonical, f, fineRoot[f], parents, next);
+                    for (var c = 1; c < CanonicalBones; c++)
+                        path[c] += FamilyClipSweep.Degrees(previous[c].Rotation, next[c].Rotation);
+                    (previous, next) = (next, previous);
+                }
+                for (var c = 1; c < CanonicalBones && !jumps[j]; c++)
+                    if (path[c] > JumpDegrees)
+                        jumps[j] = true;
+                if (jumps[j])
+                    jumpCount++;
+            }
+            return jumps;
+        }
+
+        static bool TryInBetween(FamilyRigPlan plan, AnimationClip clip, Pose[] fineCanonical, RigidPose[] fineRoot, int frames, int multiplier, bool[] jumps,
+            out float worst, out string error)
+        {
+            worst = 0f;
+            var canonical = new Pose[frames * CanonicalBones];
+            var root = new RigidPose[frames];
+            for (var f = 0; f < frames; f++)
+            {
+                Array.Copy(fineCanonical, 2 * f * CanonicalBones, canonical, f * CanonicalBones, CanonicalBones);
+                root[f] = fineRoot[2 * f];
+            }
+            if (!SharedFamilyBake.EncodeCanonicalSamples(canonical, frames, EncodedDuration(clip, DefaultSampleRate), false, RootPolicy.Planar, root,
+                    FootMarkers, true, out var bytes, out error))
+                return false;
+            var reference = SharedFamilyBake.CanonicalReferencePoses();
+            if (SharedClipReader.Load(bytes, plan.family, reference, out var loaded) != AnimationError.None || loaded == null)
+            {
+                error = "in-between check clip failed to reload.";
+                return false;
+            }
+            var decoded = new Pose[CanonicalBones];
+            var decodedModel = new RigidPose[CanonicalBones];
+            var truthModel = new RigidPose[CanonicalBones];
+            var duration = loaded.Duration;
+            for (var i = 0; i + 1 < frames; i++)
+            {
+                if (jumps[Math.Min(jumps.Length - 1, i / multiplier)])
+                    continue;
+                var seconds = duration * (i + 0.5) / (frames - 1);
+                if (loaded.Sample(seconds, reference, decoded) != AnimationError.None || !FamilyClipSweep.RootAt(loaded, seconds, out var decodedRoot))
+                {
+                    error = "in-between check failed to decode at " + seconds.ToString("0.###", CultureInfo.InvariantCulture) + " s.";
+                    return false;
+                }
+                CanonicalModel(decoded, 0, decodedRoot, plan.canonicalParents, decodedModel);
+                CanonicalModel(fineCanonical, 2 * i + 1, fineRoot[2 * i + 1], plan.canonicalParents, truthModel);
+                for (var c = 1; c < CanonicalBones; c++)
+                {
+                    var degrees = FamilyClipSweep.Degrees(truthModel[c].Rotation, decodedModel[c].Rotation);
+                    if (!float.IsFinite(degrees))
+                        degrees = float.PositiveInfinity;
+                    if (degrees > worst)
+                        worst = degrees;
+                }
+            }
+            return true;
+        }
+
+        sealed class SampledClip
+        {
+            public double Duration;
+            public bool Loop;
+        }
+
+        static readonly System.Runtime.CompilerServices.ConditionalWeakTable<RigidPose[], SampledClip> sampled =
+            new System.Runtime.CompilerServices.ConditionalWeakTable<RigidPose[], SampledClip>();
+
+        static void Remember(RigidPose[] planarRoot, AnimationClip clip)
+        {
+            if (planarRoot == null || clip == null)
+                return;
+            sampled.Remove(planarRoot);
+            sampled.Add(planarRoot, new SampledClip { Duration = EncodedDuration(clip, DefaultSampleRate), Loop = clip.isLooping });
         }
 
         public static bool TryEncode(FamilyRigPlan plan, Pose[] canonicalSamples, RigidPose[] planarRoot, float hz, out byte[] saclip, out string error) =>
@@ -203,7 +448,14 @@ namespace SA.Editor
                 return false;
             }
             var frames = planarRoot.Length;
-            return SharedFamilyBake.EncodeCanonicalSamples(canonicalSamples, frames, (frames - 1) / (double)hz, false, RootPolicy.Planar, planarRoot,
+            var duration = (frames - 1) / (double)hz;
+            var loop = false;
+            if (sampled.TryGetValue(planarRoot, out var known))
+            {
+                duration = known.Duration;
+                loop = known.Loop;
+            }
+            return SharedFamilyBake.EncodeCanonicalSamples(canonicalSamples, frames, duration, loop, RootPolicy.Planar, planarRoot,
                 FootMarkers, !lossless, out saclip, out error);
         }
 
@@ -226,6 +478,9 @@ namespace SA.Editor
             return SharedFamilyBake.EncodeCanonicalSamples(canonicalSamples, planarRoot.Length, duration, loop, RootPolicy.Planar, planarRoot,
                 FootMarkers, !lossless, out saclip, out error);
         }
+
+        public static bool TryConvert(FamilyRigPlan plan, AnimationClip clip, bool lossless, out byte[] saclip, out string error) =>
+            TryConvert(plan, clip, ClipRate(clip), lossless, out saclip, out error);
 
         public static bool TryConvert(FamilyRigPlan plan, AnimationClip clip, float hz, bool lossless, out byte[] saclip, out string error)
         {
@@ -327,6 +582,18 @@ namespace SA.Editor
         {
             locals = Array.Empty<Pose>();
             frames = 0;
+            if (!(hz > 0f) || !float.IsFinite(hz))
+            {
+                error = "sample rate must be positive.";
+                return false;
+            }
+            frames = SampleCount(clip, hz);
+            return TrySampleBonesAt(plan, clip, Grid(clip, frames, 1, false), out locals, out error);
+        }
+
+        internal static bool TrySampleBonesAt(FamilyRigPlan plan, AnimationClip clip, double[] times, out Pose[] locals, out string error)
+        {
+            locals = Array.Empty<Pose>();
             if (!Valid(plan, out error))
                 return false;
             if (clip == null)
@@ -334,17 +601,12 @@ namespace SA.Editor
                 error = "no clip given.";
                 return false;
             }
-            if (!(hz > 0f) || !float.IsFinite(hz))
-            {
-                error = "sample rate must be positive.";
-                return false;
-            }
             if (plan.character == null)
             {
                 error = "the planned character no longer exists.";
                 return false;
             }
-            frames = SampleCount(clip, hz);
+            var frames = times.Length;
             var count = plan.bones.Length;
             var copy = UnityEngine.Object.Instantiate(plan.character);
             copy.hideFlags = HideFlags.HideAndDontSave;
@@ -387,7 +649,7 @@ namespace SA.Editor
                         all[i].localRotation = restRotations[i];
                         all[i].localScale = restScales[i];
                     }
-                    clip.SampleAnimation(driven, (float)SampleSeconds(clip, frames, f));
+                    clip.SampleAnimation(driven, (float)times[f]);
                     var moved = Read(top);
                     for (var b = 0; b < count; b++)
                     {

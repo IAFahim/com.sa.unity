@@ -1,0 +1,36 @@
+{
+    "name": "SA.Conformance.Rukhanka",
+    "rootNamespace": "SA.Conformance",
+    "references": [
+        "SA.Runtime",
+        "SA.Editor",
+        "SA.Conformance",
+        "Unity.Collections",
+        "Unity.Entities",
+        "Unity.Entities.Hybrid",
+        "Unity.Mathematics",
+        "Unity.Transforms",
+        "Rukhanka.Runtime",
+        "Rukhanka.Hybrid",
+        "Rukhanka.Toolbox"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": false,
+    "precompiledReferences": [],
+    "autoReferenced": true,
+    "defineConstraints": [
+        "SA_RUKHANKA"
+    ],
+    "versionDefines": [
+        {
+            "name": "com.rukhanka.animation",
+            "expression": "2.0.0",
+            "define": "SA_RUKHANKA"
+        }
+    ],
+    "noEngineReferences": false
+}

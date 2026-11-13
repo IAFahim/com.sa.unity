@@ -1,0 +1,30 @@
+{
+    "name": "SA.Conformance",
+    "rootNamespace": "SA.Conformance",
+    "references": [
+        "SA.Runtime",
+        "SA.Editor",
+        "SA.Motion.Unity",
+        "Unity.Collections",
+        "Unity.Entities",
+        "Unity.Entities.Hybrid",
+        "Unity.Mathematics",
+        "Unity.Transforms",
+        "Unity.Scenes"
+    ],
+    "includePlatforms": [
+        "Editor"
+    ],
+    "excludePlatforms": [],
+    "allowUnsafeCode": false,
+    "overrideReferences": true,
+    "precompiledReferences": [
+        "SA.Motion.dll",
+        "SA.Animation.dll",
+        "SA.Animation.Content.dll"
+    ],
+    "autoReferenced": true,
+    "defineConstraints": [],
+    "versionDefines": [],
+    "noEngineReferences": false
+}

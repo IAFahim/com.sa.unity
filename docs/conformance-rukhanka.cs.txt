@@ -1,0 +1,132 @@
+using System;
+using System.Collections.Generic;
+using Rukhanka;
+using Rukhanka.Hybrid;
+using Rukhanka.Toolbox;
+using Unity.Collections;
+using Unity.Entities;
+using UnityEditor;
+using UnityEngine;
+using UnityEngine.SceneManagement;
+
+namespace SA.Conformance
+{
+    /// <summary>
+    /// Adds a Rukhanka rig (controller-free, scripted clip submission, bone entities kept, no root motion) for every character of
+    /// the conformance scene, and drives it next to SA in Play mode. Compiled only when com.rukhanka.animation is installed.
+    /// </summary>
+    [InitializeOnLoad]
+    public static class RukhankaConformance
+    {
+        public const string Driver = "Rukhanka";
+
+        static RukhankaConformance()
+        {
+            PlayModeConformance.ExtraRigs.Add(AddRig);
+            PlayModeConformance.ExtraDrivers.Add(new RukhankaDriver());
+        }
+
+        static void AddRig(GameObject asset, string character, int index, List<AnimationClip> clips, Scene scene)
+        {
+            var instance = PlayModeConformance.Place(asset, PlayModeConformance.RigName(Driver, character), scene);
+            instance.transform.position = PlayModeConformance.Spot(index);
+            var animator = instance.GetComponent<Animator>();
+            var avatar = animator != null ? animator.avatar : null;
+            if (animator != null)
+                UnityEngine.Object.DestroyImmediate(animator);
+            var rig = instance.AddComponent<RigDefinitionAuthoring>();
+            rig.rigConfigSource = RigDefinitionAuthoring.RigConfigSource.UserDefined;
+            rig.avatar = avatar;
+            rig.applyRootMotion = false;
+            rig.boneEntityStrippingMode = RigDefinitionAuthoring.BoneEntityStrippingMode.None;
+            rig.animationEngine = RigDefinitionAuthoring.AnimationEngine.CPU;
+            var set = instance.AddComponent<AnimationAssetSetAuthoring>();
+            set.animationClips = clips.ToArray();
+            set.avatarMasks = Array.Empty<AvatarMask>();
+        }
+
+        static uint Hash(string name) => new FixedString512Bytes(name).CalculateHash32();
+
+        sealed class RigState
+        {
+            public Avatar Avatar;
+        }
+
+        sealed class RukhankaDriver : IConformanceDriver
+        {
+            public string Name => Driver;
+            public bool RootRelative => true;
+
+            public bool Discover(World world, ConformanceManifest manifest, List<GameObject> truths, List<DrivenRig> rigs, out string error)
+            {
+                error = string.Empty;
+                var manager = world.EntityManager;
+                using var dbQuery = manager.CreateEntityQuery(typeof(BlobDatabaseSingleton));
+                if (dbQuery.CalculateEntityCount() == 0)
+                {
+                    error = "Rukhanka blob database not created yet";
+                    return false;
+                }
+                using var query = manager.CreateEntityQuery(typeof(RigDefinitionComponent), typeof(AnimationToProcessComponent));
+                using var entities = query.ToEntityArray(Allocator.Temp);
+                using var boneQuery = manager.CreateEntityQuery(typeof(AnimatorEntityRefComponent));
+                using var boneEntities = boneQuery.ToEntityArray(Allocator.Temp);
+                var claimed = new HashSet<int>();
+                foreach (var entity in entities)
+                {
+                    var best = PlayModeConformance.SpotIndex(world, entity);
+                    if (best < 0 || best >= truths.Count)
+                        continue;
+                    if (!claimed.Add(best))
+                    {
+                        error = "two Rukhanka rigs stand at the spot of " + truths[best].name;
+                        return false;
+                    }
+                    var names = new Dictionary<uint, string>();
+                    foreach (var t in truths[best].GetComponentsInChildren<Transform>(true))
+                        names[Hash(t.name)] = t.name;
+                    var blob = manager.GetComponentData<RigDefinitionComponent>(entity).rigBlob;
+                    ref var bones = ref blob.Value.bones;
+                    var animator = truths[best].GetComponentInChildren<Animator>(true);
+                    var rig = new DrivenRig { Driver = Driver, Character = truths[best].name, Entity = entity, State = new RigState { Avatar = animator != null ? animator.avatar : null } };
+                    foreach (var boneEntity in boneEntities)
+                    {
+                        var reference = manager.GetComponentData<AnimatorEntityRefComponent>(boneEntity);
+                        if (reference.animatorEntity != entity || reference.boneIndexInAnimationRig < 0 || reference.boneIndexInAnimationRig >= bones.Length)
+                            continue;
+                        if (names.TryGetValue(bones[reference.boneIndexInAnimationRig].hash, out var name) && !rig.Bones.ContainsKey(name))
+                            rig.Bones[name] = boneEntity;
+                    }
+                    rigs.Add(rig);
+                }
+                if (claimed.Count != truths.Count)
+                {
+                    error = "found Rukhanka rigs for " + claimed.Count + " of " + truths.Count + " characters (" + entities.Length + " Rukhanka rigs)";
+                    return false;
+                }
+                return true;
+            }
+
+            public bool Pose(World world, DrivenRig rig, int clip, AnimationClip asset, double seconds, out string reason)
+            {
+                reason = string.Empty;
+                var manager = world.EntityManager;
+                manager.CompleteAllTrackedJobs();
+                var state = (RigState)rig.State;
+                using var dbQuery = manager.CreateEntityQuery(typeof(BlobDatabaseSingleton));
+                var database = dbQuery.GetSingleton<BlobDatabaseSingleton>();
+                var hash = BakingUtils.ComputeAnimationHash(asset, state.Avatar);
+                if (!database.animations.TryGetValue(hash, out var blob) || !blob.IsCreated)
+                {
+                    reason = "Rukhanka baked no clip blob for this clip";
+                    return false;
+                }
+                var buffer = manager.GetBuffer<AnimationToProcessComponent>(rig.Entity);
+                ScriptedAnimator.ResetAnimationState(ref buffer);
+                var normalized = asset.length > 0f ? (float)(seconds / asset.length) : 0f;
+                ScriptedAnimator.PlayAnimation(ref buffer, blob, normalized);
+                return true;
+            }
+        }
+    }
+}

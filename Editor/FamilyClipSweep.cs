@@ -43,6 +43,8 @@ namespace SA.Editor
         public string MidWorst = string.Empty;
         public int Frames;
         public float Hz;
+        public int Multiplier = 1;
+        public int JumpIntervals;
         public float Degrees;
         public float Centimetres;
         public float RootCentimetres;
@@ -50,8 +52,7 @@ namespace SA.Editor
         public float MidDegrees;
         public float MidCentimetres;
         public float MidJumpDegrees;
-        public float MidCubicDegrees;
-        public float UnityRootCentimetres;
+               public float UnityRootCentimetres;
         public double Length;
         public double EncodedDuration;
         public bool Loop;
@@ -66,19 +67,13 @@ namespace SA.Editor
         public const string Pass = "PASS";
         public const string Fail = "FAIL";
         public const string NonHumanoid = "NONHUMANOID";
-        public const string Header = "clip,take,character,frames,hz,status,worst_bone,degrees,cm,root_cm,root_deg,mid_worst,mid_degrees,mid_cm,mid_jump_degrees,mid_cubic_degrees,unity_root_cm,length_s,encoded_s,loop,encoded_loop,bytes,seconds,flags,reason";
+        public const string Header = "clip,take,character,frames,hz,rate_x,status,worst_bone,degrees,cm,root_cm,root_deg,mid_worst,mid_degrees,mid_cm,mid_jump_degrees,jump_intervals,unity_root_cm,length_s,encoded_s,loop,encoded_loop,bytes,seconds,flags,reason";
 
-        public const float JumpDegrees = 90f;
+        public const float JumpDegrees = FamilyClips.JumpDegrees;
 
         static readonly int[] TrackedPositions = { 1, 6, 13, 32, 50, 54 };
 
-        public static float ClipRate(AnimationClip clip)
-        {
-            if (clip == null)
-                return FamilyClips.DefaultSampleRate;
-            var rate = clip.frameRate;
-            return rate >= 1f && rate <= 240f && float.IsFinite(rate) ? rate : FamilyClips.DefaultSampleRate;
-        }
+        public static float ClipRate(AnimationClip clip) => FamilyClips.ClipRate(clip);
 
         public static List<string> FindClipAssets(string[] folders)
         {
@@ -200,15 +195,35 @@ namespace SA.Editor
             return string.Join(";", flags);
         }
 
-        public static bool TryMeasure(FamilyRigPlan plan, AnimationClip clip, float hz, float scale, in ClipSweepLimits limits, ClipSweepRow row, out string error)
+        public static bool TryMeasure(FamilyRigPlan plan, AnimationClip clip, float hz, float scale, in ClipSweepLimits limits, ClipSweepRow row, out string error) =>
+            TryMeasure(plan, clip, hz, 0, scale, limits, row, out error);
+
+        public static bool TryMeasure(FamilyRigPlan plan, AnimationClip clip, float hz, int fixedMultiplier, float scale, in ClipSweepLimits limits, ClipSweepRow row,
+            out string error)
         {
             error = string.Empty;
             var started = System.Diagnostics.Stopwatch.StartNew();
-            row.Hz = hz;
             row.Length = clip.length;
             row.Loop = clip.isLooping;
-            if (!FamilyClips.TrySample(plan, clip, hz, out var canonical, out var root, out var start, out var frames, out error))
-                return false;
+            var baseFrames = FamilyClips.SampleCount(clip, hz);
+            Pose[] canonical;
+            RigidPose[] root;
+            RigidPose start;
+            int frames;
+            if (fixedMultiplier > 0)
+            {
+                if (!FamilyClips.TrySampleFrames(plan, clip, fixedMultiplier * (baseFrames - 1) + 1, out canonical, out root, out start, out frames, out error))
+                    return false;
+                row.Multiplier = fixedMultiplier;
+            }
+            else
+            {
+                if (!FamilyClips.TrySampleAdaptive(plan, clip, hz, FamilyClips.InBetweenDegrees, FamilyClips.MaxRateMultiplier, out canonical, out root, out start,
+                        out frames, out var report, out error))
+                    return false;
+                row.Multiplier = report.Multiplier;
+            }
+            row.Hz = hz * row.Multiplier;
             row.Frames = frames;
             var duration = FamilyClips.EncodedDuration(clip, hz);
             if (!FamilyClips.TryEncode(plan, canonical, root, duration, clip.isLooping, false, out var bytes, out error))
@@ -231,7 +246,7 @@ namespace SA.Editor
             copy.hideFlags = HideFlags.HideAndDontSave;
             try
             {
-                if (!Measure(plan, clip, copy, scale, loaded, reference, start, frames, row, out error))
+                if (!Measure(plan, clip, copy, scale, loaded, reference, start, frames, baseFrames, row.Multiplier, row, out error))
                     return false;
             }
             finally
@@ -260,7 +275,7 @@ namespace SA.Editor
         }
 
         static bool Measure(FamilyRigPlan plan, AnimationClip clip, GameObject copy, float scale, SharedClip loaded, Pose[] reference, RigidPose start,
-            int frames, ClipSweepRow row, out string error)
+            int frames, int baseFrames, int multiplier, ClipSweepRow row, out string error)
         {
             error = string.Empty;
             var count = plan.bones.Length;
@@ -300,14 +315,15 @@ namespace SA.Editor
             var rootLocals = new Pose[frames * count];
             var steps = 2 * frames - 1;
             var duration = loaded.Duration;
-            var frameTruth = new[] { new Quaternion[count], new Quaternion[count] };
-            var cubicFrame = new Pose[FamilyClips.CanonicalBones];
-            var cubicRoot = new RigidPose[1];
-            var cubicModel = new RigidPose[count];
+            multiplier = Math.Max(1, multiplier);
+            var intervals = Math.Max(1, (frames - 1 + multiplier - 1) / multiplier);
+            var path = new float[intervals * count];
+            var previousTruth = new Quaternion[count];
+            var middles = new List<(int frame, float degrees, int worst, float centimetres)>();
             for (var s = 0; s < steps; s++)
             {
-                var mid = s > 0 && (s & 1) == 0;
-                var frame = s == 0 ? 0 : mid ? s / 2 - 1 : (s + 1) / 2;
+                var mid = (s & 1) == 1;
+                var frame = s / 2;
                 var seconds = mid ? duration * (frame + 0.5) / (frames - 1) : duration * frame / (frames - 1);
                 var clipSeconds = clip.length > 0f ? Math.Min(clip.length, seconds) : 0.0;
                 if (loaded.Loop && frame == frames - 1)
@@ -346,16 +362,14 @@ namespace SA.Editor
                     error = "applied pose failed to compose at " + seconds.ToString("0.###", CultureInfo.InvariantCulture) + " s.";
                     return false;
                 }
-                var jump = false;
-                for (var b = 1; mid && b < count; b++)
-                    if (plan.canonicalOfBone[b] > 0 && Degrees(frameTruth[frame & 1][b], frameTruth[(frame + 1) & 1][b]) > JumpDegrees)
-                        jump = true;
-                if (mid && !jump && CubicAt(loaded, reference, start, frames, frame, cubicFrame, cubicRoot)
-                    && FamilyClips.TryApply(plan, cubicFrame, cubicRoot, out var cubicLocals, out _)
-                    && RigidMath.Model(plan.parents, cubicLocals, cubicModel) == AnimationError.None)
-                    for (var b = 1; b < count; b++)
-                        if (plan.canonicalOfBone[b] > 0)
-                            row.MidCubicDegrees = Math.Max(row.MidCubicDegrees, Degrees(truthModel[b].Rotation, cubicModel[b].Rotation));
+                var interval = Math.Min(intervals - 1, Math.Max(0, mid ? frame : frame - 1) / multiplier);
+                for (var b = 1; s > 0 && b < count; b++)
+                    if (plan.canonicalOfBone[b] > 0)
+                        path[interval * count + b] += Degrees(previousTruth[b], truthModel[b].Rotation);
+                for (var b = 1; b < count; b++)
+                    previousTruth[b] = truthModel[b].Rotation;
+                var midDegrees = 0f;
+                var midWorst = -1;
                 for (var b = 1; b < count; b++)
                 {
                     var c = plan.canonicalOfBone[b];
@@ -366,19 +380,13 @@ namespace SA.Editor
                         degrees = float.PositiveInfinity;
                     if (mid)
                     {
-                        if (jump)
+                        if (degrees > midDegrees || float.IsInfinity(degrees))
                         {
-                            row.MidJumpDegrees = Math.Max(row.MidJumpDegrees, degrees);
-                            continue;
-                        }
-                        if (degrees > row.MidDegrees || float.IsInfinity(degrees))
-                        {
-                            row.MidDegrees = degrees;
-                            row.MidWorst = SharedFamilyBake.CanonicalNames[c] + "@" + frame.ToString(CultureInfo.InvariantCulture) + ".5";
+                            midDegrees = degrees;
+                            midWorst = c;
                         }
                         continue;
                     }
-                    frameTruth[frame & 1][b] = truthModel[b].Rotation;
                     var name = SharedFamilyBake.CanonicalNames[c];
                     if (!row.BoneDegrees.TryGetValue(name, out var worst) || degrees > worst)
                         row.BoneDegrees[name] = degrees;
@@ -388,6 +396,7 @@ namespace SA.Editor
                         row.WorstBone = name + "@" + frame.ToString(CultureInfo.InvariantCulture);
                     }
                 }
+                var midCentimetres = 0f;
                 foreach (var c in TrackedPositions)
                 {
                     var b = plan.boneOfCanonical[c];
@@ -397,12 +406,15 @@ namespace SA.Editor
                     if (!float.IsFinite(centimetres))
                         centimetres = float.PositiveInfinity;
                     if (mid)
-                        row.MidCentimetres = Math.Max(row.MidCentimetres, centimetres);
+                        midCentimetres = Math.Max(midCentimetres, centimetres);
                     else
                         row.Centimetres = Math.Max(row.Centimetres, centimetres);
                 }
                 if (mid)
+                {
+                    middles.Add((frame, midDegrees, midWorst, midCentimetres));
                     continue;
+                }
                 rootTruth[frame] = placedRoot[0];
                 if (!TruthLocals(plan, truthModel, truthLocal))
                 {
@@ -410,6 +422,29 @@ namespace SA.Editor
                     return false;
                 }
                 Array.Copy(truthLocal, 0, rootLocals, frame * count, count);
+            }
+            var jumps = new bool[intervals];
+            for (var j = 0; j < intervals; j++)
+            {
+                for (var b = 1; b < count && !jumps[j]; b++)
+                    if (path[j * count + b] > JumpDegrees)
+                        jumps[j] = true;
+                if (jumps[j])
+                    row.JumpIntervals++;
+            }
+            foreach (var (frame, degrees, worst, centimetres) in middles)
+            {
+                if (jumps[Math.Min(intervals - 1, frame / multiplier)])
+                {
+                    row.MidJumpDegrees = Math.Max(row.MidJumpDegrees, degrees);
+                    continue;
+                }
+                if (degrees > row.MidDegrees || float.IsInfinity(degrees))
+                {
+                    row.MidDegrees = degrees;
+                    row.MidWorst = (worst > 0 ? SharedFamilyBake.CanonicalNames[worst] : "-") + "@" + frame.ToString(CultureInfo.InvariantCulture) + ".5";
+                }
+                row.MidCentimetres = Math.Max(row.MidCentimetres, centimetres);
             }
             if (!FamilyClips.TryCanonical(plan, rootLocals, frames, out _, out var truthRoot, out var truthStart, out error))
                 return false;
@@ -426,47 +461,6 @@ namespace SA.Editor
                 row.RootDegrees = Math.Max(row.RootDegrees, float.IsFinite(degrees) ? degrees : float.PositiveInfinity);
             }
             return true;
-        }
-
-        static bool CubicAt(SharedClip loaded, Pose[] reference, RigidPose start, int frames, int frame, Pose[] output, RigidPose[] root)
-        {
-            var poses = new Pose[4][];
-            var roots = new RigidPose[4];
-            for (var k = 0; k < 4; k++)
-            {
-                var index = Math.Max(0, Math.Min(frames - 1, frame - 1 + k));
-                var seconds = loaded.Duration * index / (frames - 1);
-                if (loaded.Loop && index == frames - 1)
-                    seconds = loaded.Duration * (1.0 - 1e-9);
-                poses[k] = new Pose[output.Length];
-                if (loaded.Sample(seconds, reference, poses[k]) != AnimationError.None)
-                    return false;
-                roots[k] = loaded.Root[index];
-            }
-            for (var c = 0; c < output.Length; c++)
-                output[c] = new Pose
-                {
-                    Position = Cubic(poses[0][c].Position, poses[1][c].Position, poses[2][c].Position, poses[3][c].Position),
-                    Rotation = Cubic(poses[0][c].Rotation, poses[1][c].Rotation, poses[2][c].Rotation, poses[3][c].Rotation),
-                    Scale = Float3.One
-                };
-            var planar = new RigidPose(Cubic(roots[0].Position, roots[1].Position, roots[2].Position, roots[3].Position),
-                Cubic(roots[0].Rotation, roots[1].Rotation, roots[2].Rotation, roots[3].Rotation));
-            return RigidMath.TryCompose(start, planar, out root[0]);
-        }
-
-        static Float3 Cubic(Float3 a, Float3 b, Float3 c, Float3 d) => (b + c) * 0.5625f - (a + d) * 0.0625f;
-
-        static Quaternion Cubic(Quaternion a, Quaternion b, Quaternion c, Quaternion d)
-        {
-            a = Quaternion.Dot(a, b) < 0f ? -a : a;
-            c = Quaternion.Dot(c, b) < 0f ? -c : c;
-            d = Quaternion.Dot(d, c) < 0f ? -d : d;
-            return Quaternion.Normalize(new Quaternion(
-                (b.X + c.X) * 0.5625f - (a.X + d.X) * 0.0625f,
-                (b.Y + c.Y) * 0.5625f - (a.Y + d.Y) * 0.0625f,
-                (b.Z + c.Z) * 0.5625f - (a.Z + d.Z) * 0.0625f,
-                (b.W + c.W) * 0.5625f - (a.W + d.W) * 0.0625f));
         }
 
         static bool TruthLocals(FamilyRigPlan plan, RigidPose[] truthModel, Pose[] truthLocal)
@@ -518,10 +512,12 @@ namespace SA.Editor
         {
             var text = new StringBuilder();
             text.Append(Quote(row.Clip)).Append(',').Append(Quote(row.Take)).Append(',').Append(Quote(row.Character)).Append(',')
-                .Append(row.Frames.ToString(CultureInfo.InvariantCulture)).Append(',').Append(F(row.Hz)).Append(',').Append(row.Status).Append(',')
+                .Append(row.Frames.ToString(CultureInfo.InvariantCulture)).Append(',').Append(F(row.Hz)).Append(',')
+                .Append(row.Multiplier.ToString(CultureInfo.InvariantCulture)).Append(',').Append(row.Status).Append(',')
                 .Append(Quote(row.WorstBone)).Append(',').Append(F(row.Degrees)).Append(',').Append(F(row.Centimetres)).Append(',')
                 .Append(F(row.RootCentimetres)).Append(',').Append(F(row.RootDegrees)).Append(',').Append(Quote(row.MidWorst)).Append(',').Append(F(row.MidDegrees)).Append(',')
-                .Append(F(row.MidCentimetres)).Append(',').Append(F(row.MidJumpDegrees)).Append(',').Append(F(row.MidCubicDegrees)).Append(',').Append(F(row.UnityRootCentimetres)).Append(',')
+                .Append(F(row.MidCentimetres)).Append(',').Append(F(row.MidJumpDegrees)).Append(',')
+                .Append(row.JumpIntervals.ToString(CultureInfo.InvariantCulture)).Append(',').Append(F(row.UnityRootCentimetres)).Append(',')
                 .Append(row.Length.ToString("0.######", CultureInfo.InvariantCulture)).Append(',')
                 .Append(row.EncodedDuration.ToString("0.######", CultureInfo.InvariantCulture)).Append(',')
                 .Append(row.Loop ? '1' : '0').Append(',').Append(row.EncodedLoop ? '1' : '0').Append(',')
@@ -564,12 +560,11 @@ namespace SA.Editor
         }
 
         public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append) =>
-            Run(characters, scales, folders, csvPath, first, count, append, 1f);
+            Run(characters, scales, folders, csvPath, first, count, append, 0f);
 
         public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append, float rateScale)
         {
-            if (!(rateScale > 0f) || !float.IsFinite(rateScale))
-                rateScale = 1f;
+            var multiplier = rateScale > 0f && float.IsFinite(rateScale) ? Math.Max(1, (int)Math.Round(rateScale)) : 0;
             var limits = ClipSweepLimits.Default;
             var plans = new List<FamilyRigPlan>();
             var labels = new List<string>();
@@ -628,7 +623,7 @@ namespace SA.Editor
                             var row = new ClipSweepRow { Clip = path, Take = clip.name, Character = labels[p], Flags = flags };
                             try
                             {
-                                if (!TryMeasure(plans[p], clip, ClipRate(clip) * rateScale, planScales[p], limits, row, out var error))
+                                if (!TryMeasure(plans[p], clip, ClipRate(clip), multiplier, planScales[p], limits, row, out var error))
                                 {
                                     row.Status = Fail;
                                     row.Reason = "error: " + error;
@@ -673,8 +668,9 @@ namespace SA.Editor
         readonly float[] rootCentimetres;
         readonly float[] rootDegrees;
         readonly float[] midDegrees;
-        readonly float[] midCubicDegrees;
         readonly long[] bytes;
+        readonly long[] multipliers;
+        readonly List<float>[] mids;
         readonly SortedDictionary<string, float> bones = new SortedDictionary<string, float>(StringComparer.Ordinal);
 
         public ClipSweepSummary(List<string> labels)
@@ -688,8 +684,21 @@ namespace SA.Editor
             rootCentimetres = new float[n];
             rootDegrees = new float[n];
             midDegrees = new float[n];
-            midCubicDegrees = new float[n];
             bytes = new long[n];
+            multipliers = new long[n];
+            mids = new List<float>[n];
+            for (var i = 0; i < n; i++)
+                mids[i] = new List<float>();
+        }
+
+        static string Percentile(List<float> values, double q)
+        {
+            if (values.Count == 0)
+                return "0";
+            var sorted = new List<float>(values);
+            sorted.Sort();
+            var index = (int)Math.Min(sorted.Count - 1, Math.Max(0, Math.Ceiling(q * sorted.Count) - 1));
+            return FamilyClipSweep.F(sorted[index]);
         }
 
         public void Add(int character, ClipSweepRow row)
@@ -703,8 +712,9 @@ namespace SA.Editor
             rootCentimetres[character] = Math.Max(rootCentimetres[character], row.RootCentimetres);
             rootDegrees[character] = Math.Max(rootDegrees[character], row.RootDegrees);
             midDegrees[character] = Math.Max(midDegrees[character], row.MidDegrees);
-            midCubicDegrees[character] = Math.Max(midCubicDegrees[character], row.MidCubicDegrees);
             bytes[character] += row.Bytes;
+            multipliers[character] += row.Multiplier;
+            mids[character].Add(row.MidDegrees);
             foreach (var pair in row.BoneDegrees)
                 if (!bones.TryGetValue(pair.Key, out var worst) || pair.Value > worst)
                     bones[pair.Key] = pair.Value;
@@ -714,15 +724,17 @@ namespace SA.Editor
         {
             var text = new StringBuilder();
             text.Append("humanoid clips ").Append(Humanoid).Append(", non-humanoid clips ").Append(NonHumanoid).Append('\n');
-            text.Append("character,passed,failed,worst_deg,worst_cm,worst_root_cm,worst_root_deg,worst_mid_deg,worst_mid_cubic_deg,mean_bytes\n");
+            text.Append("character,passed,failed,worst_deg,worst_cm,worst_root_cm,worst_root_deg,worst_mid_deg,mean_bytes,mid_p50_deg,mid_p90_deg,mid_p99_deg,mean_rate_x\n");
             for (var i = 0; i < labels.Count; i++)
             {
                 var rows = passed[i] + failed[i];
                 text.Append(labels[i]).Append(',').Append(passed[i]).Append(',').Append(failed[i]).Append(',')
                     .Append(FamilyClipSweep.F(degrees[i])).Append(',').Append(FamilyClipSweep.F(centimetres[i])).Append(',')
                     .Append(FamilyClipSweep.F(rootCentimetres[i])).Append(',').Append(FamilyClipSweep.F(rootDegrees[i])).Append(',')
-                    .Append(FamilyClipSweep.F(midDegrees[i])).Append(',').Append(FamilyClipSweep.F(midCubicDegrees[i])).Append(',')
-                    .Append(rows > 0 ? (bytes[i] / rows).ToString(CultureInfo.InvariantCulture) : "0").Append('\n');
+                    .Append(FamilyClipSweep.F(midDegrees[i])).Append(',')
+                    .Append(rows > 0 ? (bytes[i] / rows).ToString(CultureInfo.InvariantCulture) : "0").Append(',')
+                    .Append(Percentile(mids[i], 0.5)).Append(',').Append(Percentile(mids[i], 0.9)).Append(',').Append(Percentile(mids[i], 0.99)).Append(',')
+                    .Append(rows > 0 ? (multipliers[i] / (double)rows).ToString("0.00", CultureInfo.InvariantCulture) : "0").Append('\n');
             }
             text.Append("bone,worst_deg_on_frames\n");
             foreach (var pair in bones)

@@ -722,11 +722,16 @@ namespace SA.Editor
                 Seek = 0,
                 Paused = 0
             });
+            if (!FamilyClips.TryPlan(root.gameObject, out var sampler, out var planError))
+            {
+                Debug.LogError("SA: " + authoring.name + " at '" + AssetPath(authoring) + "': " + planError + " Fix the rig, then rebake.", authoring);
+                return;
+            }
             var clipAssets = AddBuffer<SharedClipAsset>(entity);
             var contributions = AddBuffer<SharedContribution>(entity);
             for (var i = 0; i < clips.Count; i++)
             {
-                if (!BakeClip(root, skeleton, clips[i], rig.SampleRate, plan, out var clipBlob))
+                if (!BakeClip(sampler, clips[i], plan, out var clipBlob))
                     return;
                 clipAssets.Add(new SharedClipAsset { Value = clipBlob });
                 contributions.Add(new SharedContribution
@@ -947,52 +952,35 @@ namespace SA.Editor
             return -1;
         }
 
-        bool BakeClip(Transform root, List<Transform> skeleton, AnimationClip clip, float sampleRate,
-            FamilyPlan plan, out BlobAssetReference<SharedClipData> clipBlob)
+        bool BakeClip(FamilyRigPlan sampler, AnimationClip clip, FamilyPlan plan, out BlobAssetReference<SharedClipData> clipBlob)
         {
             clipBlob = default;
-            if (!SampleRigClip(root, skeleton, clip, sampleRate, out var rigFrames, out var frames, out var rootMoves))
+            if (!FamilyClips.TrySample(sampler, clip, out var samples, out var root, out var start, out var frames, out var error))
             {
-                Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': rig sampling failed. Fix: check the clip import settings, then rebake.", clip);
+                Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': sampling failed (" + error + "). Fix: check the clip import settings, then rebake.", clip);
                 return false;
             }
-            var count = skeleton.Count;
-            var targetForCanonical = new int[SharedFamilyBake.CanonicalBones];
-            for (var c = 0; c < SharedFamilyBake.CanonicalBones; c++)
-                targetForCanonical[c] = -1;
-            for (var b = 0; b < count; b++)
-                if (plan.SourceMap[b] >= 0)
-                    targetForCanonical[plan.SourceMap[b]] = b;
-            if (rootMoves)
-                Debug.LogWarning("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': root travel is dropped, the family clip plays in place. Fix: this is expected for treadmill playback; move the character with a motion driver instead.", clip);
-            var samples = new Pose[frames * SharedFamilyBake.CanonicalBones];
-            var canonicalModel = new RigidPose[SharedFamilyBake.CanonicalBones];
-            var frameModel = new RigidPose[count];
-            var frameLocal = new Pose[count];
             for (var f = 0; f < frames; f++)
             {
-                for (var b = 0; b < count; b++)
-                    frameLocal[b] = rigFrames[f * count + b];
-                var mapped = SharedFamilyBake.TargetToCanonical(plan.TargetParents, frameLocal, frameModel, targetForCanonical, plan.Rows, plan.Binding,
-                    plan.TargetHips, plan.HeightRatio, plan.CanonicalParents, plan.CanonicalReference, canonicalModel, samples, f * SharedFamilyBake.CanonicalBones, out var badBone);
-                if (mapped == AnimationError.None)
-                    continue;
-                if (badBone < 0)
-                    Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': frame " + f + " failed to compose. Fix: check the clip for invalid bones, then rebake.", clip);
-                else
-                    Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': canonical bone " + badBone + " is not a unit pose. Fix: check the clip for scaled bones, then rebake.", clip);
-                return false;
+                var hips = samples[f * SharedFamilyBake.CanonicalBones + 1];
+                if (!RigidMath.TryCompose(start, root[f], out var heading)
+                    || !RigidMath.TryCompose(heading, new RigidPose(hips.Position, Quaternion.Normalize(hips.Rotation)), out var placed))
+                {
+                    Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': root of frame " + f + " is invalid. Fix: check the clip for invalid root motion, then rebake.", clip);
+                    return false;
+                }
+                samples[f * SharedFamilyBake.CanonicalBones + 1] = new Pose { Position = placed.Position, Rotation = Quaternion.Normalize(placed.Rotation), Scale = Float3.One };
             }
-            if (!SharedFamilyBake.EncodeCanonicalSamples(samples, frames, clip.length, clip.isLooping, out var bytes, out _))
+            if (!SharedFamilyBake.EncodeCanonicalSamples(samples, frames, FamilyClips.EncodedDuration(clip, FamilyClips.DefaultSampleRate), clip.isLooping, out var bytes, out error))
             {
-                Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': family encode failed. Fix: check the clip for scaled or invalid bones, then rebake.", clip);
+                Debug.LogError("SA: clip '" + clip.name + "' at '" + AssetDatabase.GetAssetPath(clip) + "': family encode failed (" + error + "). Fix: check the clip for scaled or invalid bones, then rebake.", clip);
                 return false;
             }
             var builder = new BlobBuilder(Allocator.Temp);
             ref var data = ref builder.ConstructRoot<SharedClipData>();
             data.Family = plan.Family;
             data.Artifact = ContentIdentity.Hash(bytes);
-            data.Duration = clip.length;
+            data.Duration = FamilyClips.EncodedDuration(clip, FamilyClips.DefaultSampleRate);
             data.SampleCount = frames;
             data.BoneCount = SharedFamilyBake.CanonicalBones;
             data.Loop = (byte)(clip.isLooping ? 1 : 0);
@@ -1002,75 +990,6 @@ namespace SA.Editor
             clipBlob = builder.CreateBlobAssetReference<SharedClipData>(Allocator.Persistent);
             builder.Dispose();
             AddBlobAsset(ref clipBlob, out _);
-            return true;
-        }
-
-        bool SampleRigClip(Transform root, List<Transform> skeleton, AnimationClip clip, float sampleRate, out Pose[] frames, out int frameCount, out bool rootMoves)
-        {
-            frames = Array.Empty<Pose>();
-            frameCount = 0;
-            rootMoves = false;
-            var rate = clip.frameRate > 60f ? 60f : clip.frameRate;
-            if (rate <= 0f)
-                return false;
-            var count = skeleton.Count;
-            frameCount = Math.Max(2, Mathf.CeilToInt(clip.length * rate) + 1);
-            var copy = UnityEngine.Object.Instantiate(root.gameObject);
-            copy.hideFlags = HideFlags.HideAndDontSave;
-            try
-            {
-                var all = copy.GetComponentsInChildren<Transform>(true);
-                var rest = new BonePose[all.Length];
-                for (var i = 0; i < all.Length; i++)
-                    rest[i] = RigBuilder.Local(all[i]);
-                var mapped = new Transform[count];
-                for (var b = 0; b < count; b++)
-                    mapped[b] = copy.transform.Find(AnimationUtility.CalculateTransformPath(skeleton[b], root));
-                var animationRoot = copy.GetComponentInChildren<Animator>(true);
-                var target = animationRoot != null ? animationRoot.gameObject : copy;
-                frames = new Pose[frameCount * count];
-                var previous = new quaternion[count];
-                for (var b = 0; b < count; b++)
-                    previous[b] = quaternion.identity;
-                var rootBase = float3.zero;
-                for (var f = 0; f < frameCount; f++)
-                {
-                    for (var i = 0; i < all.Length; i++)
-                    {
-                        all[i].localPosition = rest[i].Position;
-                        all[i].localRotation = rest[i].Rotation;
-                        all[i].localScale = rest[i].Scale;
-                    }
-                    clip.SampleAnimation(target, clip.length * f / (frameCount - 1));
-                    for (var b = 0; b < count; b++)
-                    {
-                        var local = mapped[b] != null ? RigBuilder.Local(mapped[b]) : RigBuilder.Local(skeleton[b]);
-                        if (f > 0 && math.dot(local.Rotation.value, previous[b].value) < 0f)
-                            local.Rotation = new quaternion(-local.Rotation.value);
-                        previous[b] = local.Rotation;
-                        if (!IsUnitScale(SnapScale(local.Scale)))
-                            return false;
-                        frames[f * count + b] = new Pose
-                        {
-                            Position = Conversions.ToMotion(local.Position),
-                            Rotation = Conversions.ToMotion(local.Rotation),
-                            Scale = Float3.One
-                        };
-                        if (b == 0)
-                        {
-                            var position = new float3(local.Position.x, local.Position.y, local.Position.z);
-                            if (f == 0)
-                                rootBase = position;
-                            else if (math.distancesq(position, rootBase) > 1e-12f)
-                                rootMoves = true;
-                        }
-                    }
-                }
-            }
-            finally
-            {
-                UnityEngine.Object.DestroyImmediate(copy);
-            }
             return true;
         }
 
