@@ -59,7 +59,26 @@ namespace SA.Editor
         public bool EncodedLoop;
         public int Bytes;
         public float Seconds;
+        public string JumpKinds = string.Empty;
+        public string JumpEvidence = string.Empty;
         public readonly Dictionary<string, float> BoneDegrees = new Dictionary<string, float>(StringComparer.Ordinal);
+    }
+
+    public sealed class JumpSource
+    {
+        public string Kind = string.Empty;
+        public string Muscle = string.Empty;
+        public float From;
+        public float To;
+        public float Min;
+        public float Max;
+        public string Extreme = string.Empty;
+        public float ExtremeValue;
+        public float RootDegrees;
+        public float ChainDegrees;
+        public int Muscles;
+
+        public float Step => Max - Min;
     }
 
     public static class FamilyClipSweep
@@ -67,7 +86,18 @@ namespace SA.Editor
         public const string Pass = "PASS";
         public const string Fail = "FAIL";
         public const string NonHumanoid = "NONHUMANOID";
-        public const string Header = "clip,take,character,frames,hz,rate_x,status,worst_bone,degrees,cm,root_cm,root_deg,mid_worst,mid_degrees,mid_cm,mid_jump_degrees,jump_intervals,unity_root_cm,length_s,encoded_s,loop,encoded_loop,bytes,seconds,flags,reason";
+        public const string Header = "clip,take,character,frames,hz,rate_x,status,worst_bone,degrees,cm,root_cm,root_deg,mid_worst,mid_degrees,mid_cm,mid_jump_degrees,jump_intervals,unity_root_cm,length_s,encoded_s,loop,encoded_loop,bytes,seconds,flags,reason,jump_kinds,jump_evidence";
+
+        public const string BeyondLimit = "beyond-limit";
+        public const string FastSource = "fast-source";
+        public const string InRange = "in-range";
+
+        public const float LimitMuscle = 1f;
+
+        const int EvidenceSteps = 32;
+        const int EvidenceListed = 4;
+
+        static HashSet<string> muscleBindings;
 
         public const float JumpDegrees = FamilyClips.JumpDegrees;
 
@@ -242,8 +272,7 @@ namespace SA.Editor
                 error = "encoded clip has " + loaded.SampleCount + " samples for " + frames + " frames.";
                 return false;
             }
-            var copy = UnityEngine.Object.Instantiate(plan.character);
-            copy.hideFlags = HideFlags.HideAndDontSave;
+            var copy = FamilyClips.SamplingCopy(plan);
             try
             {
                 if (!Measure(plan, clip, copy, scale, loaded, reference, start, frames, baseFrames, row.Multiplier, row, out error))
@@ -423,20 +452,24 @@ namespace SA.Editor
                 }
                 Array.Copy(truthLocal, 0, rootLocals, frame * count, count);
             }
-            var jumps = new bool[intervals];
+            var candidates = new bool[intervals];
             for (var j = 0; j < intervals; j++)
-            {
-                for (var b = 1; b < count && !jumps[j]; b++)
-                    if (path[j * count + b] > JumpDegrees)
-                        jumps[j] = true;
+                for (var b = 1; b < count && !candidates[j]; b++)
+                    if (plan.canonicalOfBone[b] > 0 && path[j * count + b] > JumpDegrees)
+                        candidates[j] = true;
+            if (!FamilyClips.TryUnityJumps(plan, clip, baseFrames, candidates, null, out var jumps, out var stepDegrees, out var jumpBone, out error))
+                return false;
+            for (var j = 0; j < intervals; j++)
                 if (jumps[j])
                     row.JumpIntervals++;
-            }
+            var excluded = new float[intervals];
             foreach (var (frame, degrees, worst, centimetres) in middles)
             {
-                if (jumps[Math.Min(intervals - 1, frame / multiplier)])
+                var interval = Math.Min(intervals - 1, frame / multiplier);
+                if (jumps[interval])
                 {
                     row.MidJumpDegrees = Math.Max(row.MidJumpDegrees, degrees);
+                    excluded[interval] = Math.Max(excluded[interval], float.IsFinite(degrees) ? degrees : float.PositiveInfinity);
                     continue;
                 }
                 if (degrees > row.MidDegrees || float.IsInfinity(degrees))
@@ -446,6 +479,34 @@ namespace SA.Editor
                 }
                 row.MidCentimetres = Math.Max(row.MidCentimetres, centimetres);
             }
+            var kinds = new SortedDictionary<string, (int frames, float excluded)>(StringComparer.Ordinal);
+            var listed = new List<(float excluded, bool inRange, string text)>();
+            for (var j = 0; j < intervals; j++)
+            {
+                if (!jumps[j])
+                    continue;
+                var bone = jumpBone[j];
+                var first = duration * Math.Min(frames - 1, j * multiplier) / (frames - 1);
+                var last = duration * Math.Min(frames - 1, (j + 1) * multiplier) / (frames - 1);
+                var source = SourceOf(clip, first, Math.Min(clip.length, last), HumanBone(plan.canonicalOfBone[bone]));
+                kinds.TryGetValue(source.Kind, out var seen);
+                kinds[source.Kind] = (seen.frames + 1, Math.Max(seen.excluded, excluded[j]));
+                listed.Add((excluded[j], source.Kind == InRange, "frame " + j.ToString(CultureInfo.InvariantCulture) + " " + SharedFamilyBake.CanonicalNames[plan.canonicalOfBone[bone]]
+                    + " turns " + F(stepDegrees[j]) + " deg within 1/" + (FamilyClips.MaxRateMultiplier * FamilyClips.ClipRate(clip)).ToString("0", CultureInfo.InvariantCulture)
+                    + " s in Unity, SA in-between off by " + F(excluded[j]) + " deg: " + Describe(source)));
+            }
+            listed.Sort((a, b) => a.inRange != b.inRange ? (a.inRange ? -1 : 1) : b.excluded.CompareTo(a.excluded));
+            var evidence = new StringBuilder();
+            for (var i = 0; i < listed.Count && i < EvidenceListed; i++)
+                evidence.Append(i > 0 ? " | " : string.Empty).Append(listed[i].text);
+            if (listed.Count > EvidenceListed)
+                evidence.Append(" | +").Append((listed.Count - EvidenceListed).ToString(CultureInfo.InvariantCulture)).Append(" more");
+            var kindText = new StringBuilder();
+            foreach (var pair in kinds)
+                kindText.Append(kindText.Length > 0 ? ";" : string.Empty).Append(pair.Key).Append(':').Append(pair.Value.frames.ToString(CultureInfo.InvariantCulture))
+                    .Append('@').Append(F(pair.Value.excluded));
+            row.JumpKinds = kindText.ToString();
+            row.JumpEvidence = evidence.ToString();
             if (!FamilyClips.TryCanonical(plan, rootLocals, frames, out _, out var truthRoot, out var truthStart, out error))
                 return false;
             for (var f = 0; f < frames; f++)
@@ -461,6 +522,167 @@ namespace SA.Editor
                 row.RootDegrees = Math.Max(row.RootDegrees, float.IsFinite(degrees) ? degrees : float.PositiveInfinity);
             }
             return true;
+        }
+
+        public static int HumanBone(int canonical)
+        {
+            var names = SharedFamilyBake.CanonicalNames;
+            return canonical > 0 && canonical < names.Length && Enum.TryParse<HumanBodyBones>(names[canonical], out var bone) ? (int)bone : -1;
+        }
+
+        public static JumpSource SourceOf(AnimationClip clip, double start, double end) => SourceOf(clip, start, end, -1);
+
+        public static JumpSource SourceOf(AnimationClip clip, double start, double end, int humanBone)
+        {
+            var source = new JumpSource { Kind = InRange };
+            if (clip == null)
+                return source;
+            if (end < start)
+                (start, end) = (end, start);
+            var names = humanBone >= 0 ? ChainMuscles(humanBone) : MuscleBindings();
+            var rootCurves = new AnimationCurve[4];
+            var bestStep = -1f;
+            var bestAbs = -1f;
+            foreach (var binding in AnimationUtility.GetCurveBindings(clip))
+            {
+                if (binding.type != typeof(Animator))
+                    continue;
+                var name = binding.propertyName;
+                var rootAxis = name.StartsWith("RootQ.", StringComparison.Ordinal) ? "xyzw".IndexOf(name[name.Length - 1]) : -1;
+                if (rootAxis < 0 && !names.Contains(name))
+                    continue;
+                var curve = AnimationUtility.GetEditorCurve(clip, binding);
+                if (curve == null || curve.length == 0)
+                    continue;
+                if (rootAxis >= 0)
+                {
+                    rootCurves[rootAxis] = curve;
+                    continue;
+                }
+                source.Muscles++;
+                var min = float.PositiveInfinity;
+                var max = float.NegativeInfinity;
+                var travel = 0f;
+                var previousValue = curve.Evaluate((float)start);
+                for (var i = 0; i <= EvidenceSteps; i++)
+                {
+                    var value = curve.Evaluate((float)(start + (end - start) * i / EvidenceSteps));
+                    min = Math.Min(min, value);
+                    max = Math.Max(max, value);
+                    travel += Math.Abs(value - previousValue);
+                    previousValue = value;
+                }
+                source.ChainDegrees += travel * MuscleDegrees(name);
+                if (max - min > bestStep)
+                {
+                    bestStep = max - min;
+                    source.Muscle = name;
+                    source.Min = min;
+                    source.Max = max;
+                    source.From = curve.Evaluate((float)start);
+                    source.To = curve.Evaluate((float)end);
+                }
+                var extreme = Math.Abs(min) > Math.Abs(max) ? min : max;
+                if (Math.Abs(extreme) > bestAbs)
+                {
+                    bestAbs = Math.Abs(extreme);
+                    source.Extreme = name;
+                    source.ExtremeValue = extreme;
+                }
+            }
+            if (rootCurves[0] != null && rootCurves[1] != null && rootCurves[2] != null && rootCurves[3] != null)
+            {
+                var previous = RootRotation(rootCurves, start);
+                for (var i = 1; i <= EvidenceSteps; i++)
+                {
+                    var next = RootRotation(rootCurves, start + (end - start) * i / EvidenceSteps);
+                    source.RootDegrees += Degrees(previous, next);
+                    previous = next;
+                }
+            }
+            source.ChainDegrees += source.RootDegrees;
+            source.Kind = Classify(source);
+            return source;
+        }
+
+        public static string Classify(JumpSource source)
+        {
+            if (source == null)
+                return InRange;
+            if (Math.Abs(source.ExtremeValue) > LimitMuscle)
+                return BeyondLimit;
+            if (source.ChainDegrees > JumpDegrees)
+                return FastSource;
+            return InRange;
+        }
+
+        static Dictionary<string, float> muscleDegrees;
+
+        static float MuscleDegrees(string binding)
+        {
+            if (muscleDegrees == null)
+            {
+                var table = new Dictionary<string, float>(StringComparer.Ordinal);
+                for (var m = 0; m < HumanTrait.MuscleCount; m++)
+                    table[BindingOf(HumanTrait.MuscleName[m])] = Math.Max(Math.Abs(HumanTrait.GetMuscleDefaultMin(m)), Math.Abs(HumanTrait.GetMuscleDefaultMax(m)));
+                muscleDegrees = table;
+            }
+            return muscleDegrees.TryGetValue(binding, out var degrees) ? degrees : 0f;
+        }
+
+        public static string Describe(JumpSource source)
+        {
+            var text = new StringBuilder();
+            text.Append(source.Kind).Append("; largest change ").Append(source.Muscle).Append(' ').Append(F(source.From)).Append(" to ").Append(F(source.To))
+                .Append(" (range ").Append(F(source.Min)).Append("..").Append(F(source.Max)).Append(")");
+            text.Append("; largest value ").Append(source.Extreme).Append(' ').Append(F(source.ExtremeValue));
+            if (source.RootDegrees > 0f)
+                text.Append("; root turn ").Append(F(source.RootDegrees)).Append(" deg");
+            text.Append("; source travel ").Append(F(source.ChainDegrees)).Append(" deg");
+            return text.ToString();
+        }
+
+        static Quaternion RootRotation(AnimationCurve[] curves, double seconds)
+        {
+            var t = (float)seconds;
+            return Quaternion.Normalize(new Quaternion(curves[0].Evaluate(t), curves[1].Evaluate(t), curves[2].Evaluate(t), curves[3].Evaluate(t)));
+        }
+
+        static string BindingOf(string muscle)
+        {
+            string[] fingers = { "Thumb", "Index", "Middle", "Ring", "Little" };
+            foreach (var side in new[] { "Left", "Right" })
+                foreach (var finger in fingers)
+                {
+                    var prefix = side + " " + finger + " ";
+                    if (muscle.StartsWith(prefix, StringComparison.Ordinal))
+                        return side + "Hand." + finger + "." + muscle.Substring(prefix.Length);
+                }
+            return muscle;
+        }
+
+        static HashSet<string> MuscleBindings()
+        {
+            if (muscleBindings != null)
+                return muscleBindings;
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            foreach (var muscle in HumanTrait.MuscleName)
+                names.Add(BindingOf(muscle));
+            muscleBindings = names;
+            return names;
+        }
+
+        public static HashSet<string> ChainMuscles(int humanBone)
+        {
+            var names = new HashSet<string>(StringComparer.Ordinal);
+            for (var bone = humanBone; bone >= 0 && bone < HumanTrait.BoneCount; bone = HumanTrait.GetParentBone(bone))
+                for (var dof = 0; dof < 3; dof++)
+                {
+                    var muscle = HumanTrait.MuscleFromBone(bone, dof);
+                    if (muscle >= 0 && muscle < HumanTrait.MuscleCount)
+                        names.Add(BindingOf(HumanTrait.MuscleName[muscle]));
+                }
+            return names;
         }
 
         static bool TruthLocals(FamilyRigPlan plan, RigidPose[] truthModel, Pose[] truthLocal)
@@ -522,7 +744,7 @@ namespace SA.Editor
                 .Append(row.EncodedDuration.ToString("0.######", CultureInfo.InvariantCulture)).Append(',')
                 .Append(row.Loop ? '1' : '0').Append(',').Append(row.EncodedLoop ? '1' : '0').Append(',')
                 .Append(row.Bytes.ToString(CultureInfo.InvariantCulture)).Append(',').Append(F(row.Seconds)).Append(',')
-                .Append(Quote(row.Flags)).Append(',').Append(Quote(row.Reason));
+                .Append(Quote(row.Flags)).Append(',').Append(Quote(row.Reason)).Append(',').Append(Quote(row.JumpKinds)).Append(',').Append(Quote(row.JumpEvidence));
             return text.ToString();
         }
 
@@ -562,7 +784,10 @@ namespace SA.Editor
         public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append) =>
             Run(characters, scales, folders, csvPath, first, count, append, 0f);
 
-        public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append, float rateScale)
+        public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append, float rateScale) =>
+            Run(characters, scales, folders, csvPath, first, count, append, rateScale, HumanoidTwist.Avatar);
+
+        public static string Run(string[] characters, float[] scales, string[] folders, string csvPath, int first, int count, bool append, float rateScale, HumanoidTwist twist)
         {
             var multiplier = rateScale > 0f && float.IsFinite(rateScale) ? Math.Max(1, (int)Math.Round(rateScale)) : 0;
             var limits = ClipSweepLimits.Default;
@@ -585,7 +810,7 @@ namespace SA.Editor
                     instance.name = asset.name;
                     instance.hideFlags = HideFlags.HideAndDontSave;
                     instances.Add(instance);
-                    if (!FamilyClips.TryPlan(instance, out var plan, out var error))
+                    if (!FamilyClips.TryPlan(instance, twist, out var plan, out var error))
                     {
                         report.Append("plan failed for ").Append(characters[i]).Append(": ").Append(error).Append('\n');
                         continue;
@@ -649,6 +874,8 @@ namespace SA.Editor
             }
             finally
             {
+                foreach (var plan in plans)
+                    plan.Dispose();
                 foreach (var instance in instances)
                     if (instance != null)
                         UnityEngine.Object.DestroyImmediate(instance);

@@ -113,7 +113,9 @@ namespace SA.Tests
             return root;
         }
 
-        static Avatar BuildAvatar(GameObject root)
+        static Avatar BuildAvatar(GameObject root) => BuildAvatar(root, 0.5f);
+
+        static Avatar BuildAvatar(GameObject root, float twist)
         {
             var human = new List<HumanBone>();
             var names = SharedFamilyBake.CanonicalNames;
@@ -129,10 +131,10 @@ namespace SA.Tests
             {
                 human = human.ToArray(),
                 skeleton = skeleton.ToArray(),
-                upperArmTwist = 0.5f,
-                lowerArmTwist = 0.5f,
-                upperLegTwist = 0.5f,
-                lowerLegTwist = 0.5f,
+                upperArmTwist = twist,
+                lowerArmTwist = twist,
+                upperLegTwist = twist,
+                lowerLegTwist = twist,
                 armStretch = 0.05f,
                 legStretch = 0.05f,
                 feetSpacing = 0f,
@@ -860,6 +862,153 @@ namespace SA.Tests
                 UnityEngine.Object.DestroyImmediate(rig);
                 if (avatar != null)
                     UnityEngine.Object.DestroyImmediate(avatar);
+            }
+        }
+
+        static AnimationClip MuscleClip(string name, float seconds, params (string muscle, Func<float, float> value)[] muscles)
+        {
+            var clip = new AnimationClip { name = name, frameRate = Hz };
+            foreach (var (muscle, value) in muscles)
+            {
+                var curve = new AnimationCurve();
+                for (var f = 0; f <= Mathf.RoundToInt(seconds * Hz); f++)
+                    curve.AddKey(f / Hz, value(f / Hz));
+                for (var k = 0; k < curve.length; k++)
+                {
+                    AnimationUtility.SetKeyLeftTangentMode(curve, k, AnimationUtility.TangentMode.Linear);
+                    AnimationUtility.SetKeyRightTangentMode(curve, k, AnimationUtility.TangentMode.Linear);
+                }
+                AnimationUtility.SetEditorCurve(clip, EditorCurveBinding.FloatCurve(string.Empty, typeof(Animator), muscle), curve);
+            }
+            return clip;
+        }
+
+        static GameObject HumanoidRig(float twist, out Avatar avatar)
+        {
+            var rig = MixamoRig(out _);
+            avatar = BuildAvatar(rig, twist);
+            rig.AddComponent<Animator>().avatar = avatar;
+            return rig;
+        }
+
+        static float WorstCanonicalDegrees(Pose[] a, Pose[] b, int canonical)
+        {
+            var worst = 0f;
+            for (var i = canonical; i < a.Length && i < b.Length; i += FamilyClips.CanonicalBones)
+                worst = Math.Max(worst, Degrees(a[i].Rotation, b[i].Rotation));
+            return worst;
+        }
+
+        [Test]
+        public void PerBoneTwistPlanSamplesLikeAnAvatarWhoseTwistSettingsAreOne()
+        {
+            var half = HumanoidRig(0.5f, out var halfAvatar);
+            var one = HumanoidRig(1f, out var oneAvatar);
+            var clip = MuscleClip("W1Twist", 1f,
+                ("Left Arm Twist In-Out", t => 0.8f * Mathf.Sin(2f * Mathf.PI * t)),
+                ("Left Forearm Twist In-Out", t => -0.7f * Mathf.Sin(2f * Mathf.PI * t)),
+                ("Left Upper Leg Twist In-Out", t => 0.6f * Mathf.Sin(2f * Mathf.PI * t)),
+                ("Left Lower Leg Twist In-Out", t => -0.5f * Mathf.Sin(2f * Mathf.PI * t)),
+                ("Left Arm Down-Up", t => 0.4f * Mathf.Cos(2f * Mathf.PI * t)),
+                ("Left Forearm Stretch", t => 0.3f * t));
+            FamilyRigPlan perBone = null;
+            try
+            {
+                Assert.IsTrue(clip.humanMotion);
+                Assert.IsTrue(FamilyClips.TryPlan(half, HumanoidTwist.PerBone, out perBone, out var error), error);
+                Assert.IsTrue(FamilyClips.TryPlan(one, out var reference, out error), error);
+                Assert.IsTrue(FamilyClips.TryPlan(half, out var avatarTwist, out error), error);
+                Assert.AreEqual(HumanoidTwist.PerBone, perBone.Twist);
+                Assert.IsNotNull(perBone.SamplingAvatar);
+                Assert.IsNull(avatarTwist.SamplingAvatar);
+                Assert.IsTrue(FamilyClips.TrySampleFixed(perBone, clip, Hz, out var p, out _, out _, out _, out error), error);
+                Assert.IsTrue(FamilyClips.TrySampleFixed(reference, clip, Hz, out var r, out _, out _, out _, out error), error);
+                Assert.IsTrue(FamilyClips.TrySampleFixed(avatarTwist, clip, Hz, out var a, out _, out _, out _, out error), error);
+                var text = new StringBuilder();
+                var worstMatch = 0f;
+                for (var c = 1; c < FamilyClips.CanonicalBones; c++)
+                    worstMatch = Math.Max(worstMatch, WorstCanonicalDegrees(p, r, c));
+                var upperArm = WorstCanonicalDegrees(p, a, 11);
+                var lowerArm = WorstCanonicalDegrees(p, a, 12);
+                var upperLeg = WorstCanonicalDegrees(p, a, 48);
+                var lowerLeg = WorstCanonicalDegrees(p, a, 49);
+                text.Append("per-bone vs avatar twist 1: ").Append(worstMatch.ToString("0.0000", CultureInfo.InvariantCulture))
+                    .Append(" deg; per-bone vs avatar twist 0.5: upper arm ").Append(upperArm.ToString("0.0", CultureInfo.InvariantCulture))
+                    .Append(", lower arm ").Append(lowerArm.ToString("0.0", CultureInfo.InvariantCulture))
+                    .Append(", upper leg ").Append(upperLeg.ToString("0.0", CultureInfo.InvariantCulture))
+                    .Append(", lower leg ").Append(lowerLeg.ToString("0.0", CultureInfo.InvariantCulture)).Append(" deg\n");
+                var row = new ClipSweepRow();
+                Assert.IsTrue(FamilyClipSweep.TryMeasure(perBone, clip, Hz, 1f, ClipSweepLimits.Default, row, out error), error);
+                text.Append(FamilyClipSweep.Header).Append('\n').Append(FamilyClipSweep.ToCsv(row)).Append('\n');
+                Report("per-bone-twist", text.ToString());
+                Assert.LessOrEqual(worstMatch, 0.01f);
+                Assert.Greater(upperArm, 5f);
+                Assert.Greater(lowerArm, 5f);
+                Assert.Greater(upperLeg, 5f);
+                Assert.Greater(lowerLeg, 5f);
+                Assert.AreEqual(FamilyClipSweep.Pass, row.Status, row.Reason);
+                var built = perBone.SamplingAvatar;
+                perBone.Dispose();
+                Assert.IsNull(perBone.SamplingAvatar);
+                Assert.IsTrue(built == null);
+            }
+            finally
+            {
+                perBone?.Dispose();
+                UnityEngine.Object.DestroyImmediate(clip);
+                UnityEngine.Object.DestroyImmediate(half);
+                UnityEngine.Object.DestroyImmediate(one);
+                UnityEngine.Object.DestroyImmediate(halfAvatar);
+                UnityEngine.Object.DestroyImmediate(oneAvatar);
+            }
+        }
+
+        [Test]
+        public void JumpRuleExcludesOnlyTurnsNoSampleRateFollows()
+        {
+            var rig = HumanoidRig(0.5f, out var avatar);
+            var fast = MuscleClip("W1FastInRange", 1f,
+                ("Left Arm Twist In-Out", t => 0.95f * Mathf.Sin(2f * Mathf.PI * 3f * t)),
+                ("Spine Twist Left-Right", t => 0.9f * Mathf.Sin(2f * Mathf.PI * 2f * t)));
+            var beyond = MuscleClip("W1BeyondLimit", 1f,
+                ("Left Arm Twist In-Out", t => 3f * t),
+                ("Spine Twist Left-Right", t => 0.3f * Mathf.Sin(2f * Mathf.PI * t)));
+            FamilyRigPlan perBone = null;
+            try
+            {
+                Assert.IsTrue(FamilyClips.TryPlan(rig, out var plan, out var error), error);
+                Assert.IsTrue(FamilyClips.TryPlan(rig, HumanoidTwist.PerBone, out perBone, out error), error);
+                var fastRow = new ClipSweepRow();
+                var beyondRow = new ClipSweepRow();
+                var perBoneRow = new ClipSweepRow();
+                Assert.IsTrue(FamilyClipSweep.TryMeasure(plan, fast, Hz, 1f, ClipSweepLimits.Default, fastRow, out error), error);
+                Assert.IsTrue(FamilyClipSweep.TryMeasure(plan, beyond, Hz, 1f, ClipSweepLimits.Default, beyondRow, out error), error);
+                Assert.IsTrue(FamilyClipSweep.TryMeasure(perBone, beyond, Hz, 1f, ClipSweepLimits.Default, perBoneRow, out error), error);
+                Report("jump-rule", FamilyClipSweep.Header + "\n" + FamilyClipSweep.ToCsv(fastRow) + "\n" + FamilyClipSweep.ToCsv(beyondRow) + "\n" + FamilyClipSweep.ToCsv(perBoneRow) + "\n");
+                Assert.AreEqual(FamilyClipSweep.Pass, fastRow.Status, fastRow.Reason);
+                Assert.AreEqual(FamilyClipSweep.Pass, beyondRow.Status, beyondRow.Reason);
+                Assert.AreEqual(FamilyClipSweep.Pass, perBoneRow.Status, perBoneRow.Reason);
+                Assert.AreEqual(0, fastRow.JumpIntervals, fastRow.JumpEvidence);
+                Assert.LessOrEqual(fastRow.MidDegrees, FamilyClips.InBetweenDegrees + 0.1f, fastRow.MidWorst);
+                Assert.GreaterOrEqual(beyondRow.JumpIntervals, 1);
+                Assert.Greater(beyondRow.MidJumpDegrees, FamilyClips.JumpDegrees);
+                Assert.LessOrEqual(beyondRow.MidDegrees, FamilyClips.InBetweenDegrees + 0.1f, beyondRow.MidWorst);
+                StringAssert.StartsWith(FamilyClipSweep.BeyondLimit + ":" + beyondRow.JumpIntervals + "@", beyondRow.JumpKinds);
+                StringAssert.Contains("Left Arm Twist In-Out", beyondRow.JumpEvidence);
+                Assert.AreEqual(0, perBoneRow.JumpIntervals, perBoneRow.JumpEvidence);
+                var source = FamilyClipSweep.SourceOf(beyond, 0.6, 0.7, (int)HumanBodyBones.LeftUpperArm);
+                Assert.AreEqual(FamilyClipSweep.BeyondLimit, source.Kind);
+                Assert.AreEqual("Left Arm Twist In-Out", source.Extreme);
+                Assert.AreEqual(2.1f, source.ExtremeValue, 1e-3f);
+                Assert.AreEqual(FamilyClipSweep.InRange, FamilyClipSweep.SourceOf(fast, 0.1, 0.1 + 1.0 / Hz, (int)HumanBodyBones.LeftUpperArm).Kind);
+            }
+            finally
+            {
+                perBone?.Dispose();
+                UnityEngine.Object.DestroyImmediate(fast);
+                UnityEngine.Object.DestroyImmediate(beyond);
+                UnityEngine.Object.DestroyImmediate(rig);
+                UnityEngine.Object.DestroyImmediate(avatar);
             }
         }
 

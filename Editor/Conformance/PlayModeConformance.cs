@@ -24,6 +24,7 @@ namespace SA.Conformance
         public List<string> Characters = new List<string>();
         public List<string> ClipPaths = new List<string>();
         public List<string> ClipNames = new List<string>();
+        public bool PerBoneTwist;
 
         public string Path => Folder + "/conformance.json";
 
@@ -73,6 +74,7 @@ namespace SA.Conformance
     public sealed class ConformanceRow
     {
         public string Driver = string.Empty;
+        public string Truth = string.Empty;
         public string Character = string.Empty;
         public string Clip = string.Empty;
         public string Take = string.Empty;
@@ -90,6 +92,11 @@ namespace SA.Conformance
     {
         public const string DefaultFolder = "Assets/zz_conformance";
         public const string SaDriver = "SA";
+        public const string SaPerBoneDriver = "SA.PerBoneTwist";
+        public const string AvatarTruth = "avatar";
+        public const string PerBoneTruth = "per-bone";
+
+        public static bool IsSa(string driver) => driver == SaDriver || driver == SaPerBoneDriver;
 
         public static readonly HumanBodyBones[] TwistBones =
         {
@@ -115,12 +122,25 @@ namespace SA.Conformance
 
         public static string RigName(string driver, string character) => driver + "|" + ConformanceManifest.Label(character);
 
-        public static string BuildScene(string folder, string[] characters, List<AnimationClip> clips)
+        public static List<AnimationClip> HumanoidClips(string[] folders)
+        {
+            var clips = new List<AnimationClip>();
+            foreach (var path in FamilyClipSweep.FindClipAssets(folders))
+                foreach (var clip in FamilyClipSweep.Takes(path))
+                    if (clip.humanMotion)
+                        clips.Add(clip);
+            return clips;
+        }
+
+        public static string BuildScene(string folder, string[] characters, List<AnimationClip> clips) =>
+            BuildScene(folder, characters, clips, false);
+
+        public static string BuildScene(string folder, string[] characters, List<AnimationClip> clips, bool perBoneTwist)
         {
             if (EditorApplication.isPlayingOrWillChangePlaymode)
                 return "leave Play mode first.";
             Directory.CreateDirectory(folder);
-            var manifest = new ConformanceManifest { Folder = folder };
+            var manifest = new ConformanceManifest { Folder = folder, PerBoneTwist = perBoneTwist };
             manifest.Characters.AddRange(characters);
             foreach (var clip in clips)
             {
@@ -143,14 +163,9 @@ namespace SA.Conformance
                     report.Append("missing ").Append(character).Append('\n');
                     continue;
                 }
-                var rig = Place(asset, RigName(SaDriver, character), sub);
-                var rigAuthoring = rig.AddComponent<RigAuthoring>();
-                rigAuthoring.DiscoverClips = false;
-                rigAuthoring.Engine = Engine.Cpu;
-                var family = rig.AddComponent<SharedFamilyAuthoring>();
-                family.Rig = rigAuthoring;
-                family.Clips = new List<AnimationClip>(clips);
-                family.Autoplay = clips.Count > 0 ? clips[0] : null;
+                PlaceSa(asset, RigName(SaDriver, character), sub, clips, HumanoidTwist.Avatar);
+                if (perBoneTwist)
+                    PlaceSa(asset, RigName(SaPerBoneDriver, character), sub, clips, HumanoidTwist.PerBone);
                 foreach (var extra in ExtraRigs)
                     extra(asset, character, index, clips, sub);
                 report.Append("placed ").Append(ConformanceManifest.Label(character)).Append('\n');
@@ -166,6 +181,19 @@ namespace SA.Conformance
             EditorSceneManager.SaveScene(main, mainPath);
             report.Append("scene ").Append(mainPath).Append(", subscene ").Append(subPath).Append(", clips ").Append(clips.Count);
             return report.ToString();
+        }
+
+        static void PlaceSa(GameObject asset, string name, Scene scene, List<AnimationClip> clips, HumanoidTwist twist)
+        {
+            var rig = Place(asset, name, scene);
+            var rigAuthoring = rig.AddComponent<RigAuthoring>();
+            rigAuthoring.DiscoverClips = false;
+            rigAuthoring.Engine = Engine.Cpu;
+            var family = rig.AddComponent<SharedFamilyAuthoring>();
+            family.Rig = rigAuthoring;
+            family.Clips = new List<AnimationClip>(clips);
+            family.Autoplay = clips.Count > 0 ? clips[0] : null;
+            family.Twist = twist;
         }
 
         public static GameObject Place(GameObject asset, string name, Scene scene)
@@ -202,20 +230,33 @@ namespace SA.Conformance
             var world = World.DefaultGameObjectInjectionWorld;
             if (world == null || !world.IsCreated)
                 return "not ready: no default world.";
-            var drivers = new List<IConformanceDriver> { new SharedFamilyDriver() };
+            var drivers = new List<IConformanceDriver> { new SharedFamilyDriver(SaDriver) };
+            if (manifest.PerBoneTwist)
+                drivers.Add(new SharedFamilyDriver(SaPerBoneDriver));
             drivers.AddRange(ExtraDrivers);
             var clips = manifest.Clips();
             var truths = new List<GameObject>();
+            var perBoneTruths = new List<GameObject>();
+            var perBoneAvatars = new List<Avatar>();
             try
             {
                 foreach (var character in manifest.Characters)
                 {
                     var asset = AssetDatabase.LoadAssetAtPath<GameObject>(character);
-                    var truth = UnityEngine.Object.Instantiate(asset);
-                    truth.name = ConformanceManifest.Label(character);
-                    truth.hideFlags = HideFlags.HideAndDontSave;
-                    truth.transform.SetPositionAndRotation(Vector3.zero, UnityEngine.Quaternion.identity);
-                    truths.Add(truth);
+                    truths.Add(Truth(asset, character));
+                    if (!manifest.PerBoneTwist)
+                        continue;
+                    var perBone = Truth(asset, character);
+                    var animator = perBone.GetComponentInChildren<Animator>(true);
+                    var avatar = FamilyClips.PerBoneTwistAvatar(animator);
+                    if (avatar != null)
+                    {
+                        perBoneAvatars.Add(avatar);
+                        animator.avatar = avatar;
+                    }
+                    perBoneTruths.Add(avatar != null ? perBone : null);
+                    if (avatar == null)
+                        UnityEngine.Object.DestroyImmediate(perBone);
                 }
                 var rigs = new List<DrivenRig>();
                 foreach (var driver in drivers)
@@ -229,7 +270,7 @@ namespace SA.Conformance
                 try
                 {
                     for (var c = 0; c < truths.Count; c++)
-                        MeasureCharacter(world, drivers, rigs, truths[c], clips, manifest, maxFramesPerClip, rows);
+                        MeasureCharacter(world, drivers, rigs, truths[c], c < perBoneTruths.Count ? perBoneTruths[c] : null, clips, manifest, maxFramesPerClip, rows);
                 }
                 finally
                 {
@@ -237,9 +278,9 @@ namespace SA.Conformance
                         timeSystem.Enabled = timeWasEnabled;
                 }
                 Directory.CreateDirectory(System.IO.Path.GetDirectoryName(csvPath));
-                var csv = new StringBuilder("driver,character,clip,take,frames,status,worst,degrees,cm,worst_outside_twist,degrees_outside_twist,reason\n");
+                var csv = new StringBuilder("driver,truth,character,clip,take,frames,status,worst,degrees,cm,worst_outside_twist,degrees_outside_twist,reason\n");
                 foreach (var row in rows)
-                    csv.Append(row.Driver).Append(',').Append(row.Character).Append(",\"").Append(row.Clip).Append("\",\"").Append(row.Take).Append("\",")
+                    csv.Append(row.Driver).Append(',').Append(row.Truth).Append(',').Append(row.Character).Append(",\"").Append(row.Clip).Append("\",\"").Append(row.Take).Append("\",")
                         .Append(row.Frames).Append(',').Append(row.Status).Append(",\"").Append(row.Worst).Append("\",")
                         .Append(F(row.Degrees)).Append(',').Append(F(row.Centimetres)).Append(",\"").Append(row.WorstOutsideTwist).Append("\",")
                         .Append(F(row.DegreesOutsideTwist)).Append(",\"").Append(row.Reason.Replace("\"", "'")).Append("\"\n");
@@ -251,7 +292,22 @@ namespace SA.Conformance
                 foreach (var truth in truths)
                     if (truth != null)
                         UnityEngine.Object.DestroyImmediate(truth);
+                foreach (var truth in perBoneTruths)
+                    if (truth != null)
+                        UnityEngine.Object.DestroyImmediate(truth);
+                foreach (var avatar in perBoneAvatars)
+                    if (avatar != null)
+                        UnityEngine.Object.DestroyImmediate(avatar);
             }
+        }
+
+        static GameObject Truth(GameObject asset, string character)
+        {
+            var truth = UnityEngine.Object.Instantiate(asset);
+            truth.name = ConformanceManifest.Label(character);
+            truth.hideFlags = HideFlags.HideAndDontSave;
+            truth.transform.SetPositionAndRotation(Vector3.zero, UnityEngine.Quaternion.identity);
+            return truth;
         }
 
         static string F(float value) => float.IsFinite(value) ? value.ToString("0.#####", CultureInfo.InvariantCulture) : "inf";
@@ -261,7 +317,7 @@ namespace SA.Conformance
             var groups = new SortedDictionary<string, (int pass, int fail, int skip, float deg, float cm, float other)>(StringComparer.Ordinal);
             foreach (var row in rows)
             {
-                var key = row.Driver + " " + row.Character;
+                var key = row.Driver + (string.IsNullOrEmpty(row.Truth) ? string.Empty : " vs " + row.Truth + " truth") + " " + row.Character;
                 groups.TryGetValue(key, out var g);
                 if (row.Status == "PASS")
                     g.pass++;
@@ -324,44 +380,105 @@ namespace SA.Conformance
             }
         }
 
-        static void MeasureCharacter(World world, List<IConformanceDriver> drivers, List<DrivenRig> rigs, GameObject truth, List<AnimationClip> clips,
-            ConformanceManifest manifest, int maxFramesPerClip, List<ConformanceRow> rows)
+        sealed class Sampled
         {
-            var label = truth.name;
+            public GameObject Root;
+            public GameObject Driven;
+            public Transform[] All = Array.Empty<Transform>();
+            public Vector3[] Positions = Array.Empty<Vector3>();
+            public UnityEngine.Quaternion[] Rotations = Array.Empty<UnityEngine.Quaternion>();
+            public Vector3[] Scales = Array.Empty<Vector3>();
+            public readonly List<(string name, Transform bone, bool position, bool twist)> Human = new List<(string, Transform, bool, bool)>();
+
+            public static Sampled Of(GameObject root)
+            {
+                var sampled = new Sampled { Root = root };
+                var animator = root.GetComponentInChildren<Animator>(true);
+                sampled.Driven = animator != null ? animator.gameObject : root;
+                sampled.All = root.GetComponentsInChildren<Transform>(true);
+                var count = sampled.All.Length;
+                sampled.Positions = new Vector3[count];
+                sampled.Rotations = new UnityEngine.Quaternion[count];
+                sampled.Scales = new Vector3[count];
+                for (var i = 0; i < count; i++)
+                {
+                    sampled.Positions[i] = sampled.All[i].localPosition;
+                    sampled.Rotations[i] = sampled.All[i].localRotation;
+                    sampled.Scales[i] = sampled.All[i].localScale;
+                }
+                for (var h = 0; h < (int)HumanBodyBones.LastBone; h++)
+                {
+                    var bone = animator != null ? animator.GetBoneTransform((HumanBodyBones)h) : null;
+                    if (bone != null)
+                        sampled.Human.Add((bone.name, bone, Array.IndexOf(PositionBones, (HumanBodyBones)h) >= 0, Array.IndexOf(TwistBones, (HumanBodyBones)h) >= 0));
+                }
+                return sampled;
+            }
+
+            public RigidTransform Sample(AnimationClip clip, double seconds)
+            {
+                for (var i = 0; i < All.Length; i++)
+                {
+                    All[i].localPosition = Positions[i];
+                    All[i].localRotation = Rotations[i];
+                    All[i].localScale = Scales[i];
+                }
+                clip.SampleAnimation(Driven, (float)seconds);
+                return math.inverse(new RigidTransform(Root.transform.rotation, Root.transform.position));
+            }
+        }
+
+        static void Compare(Accumulator acc, Sampled truth, RigidTransform rootInverse, bool rootRelative, Dictionary<string, RigidTransform> bones, double seconds)
+        {
+            foreach (var (name, bone, position, twist) in truth.Human)
+            {
+                if (!bones.TryGetValue(name, out var pose))
+                {
+                    acc.Rotation(float.PositiveInfinity, name + " has no entity", twist);
+                    continue;
+                }
+                var expected = new RigidTransform(bone.rotation, bone.position);
+                if (rootRelative)
+                    expected = math.mul(rootInverse, expected);
+                acc.Rotation(Angle(expected.rot, pose.rot), name + "@" + seconds.ToString("0.###", CultureInfo.InvariantCulture) + "s", twist);
+                if (position)
+                    acc.Position(math.distance(expected.pos, pose.pos) * 100f);
+            }
+            acc.Row.Frames++;
+        }
+
+        static void MeasureCharacter(World world, List<IConformanceDriver> drivers, List<DrivenRig> rigs, GameObject truthObject, GameObject perBoneObject,
+            List<AnimationClip> clips, ConformanceManifest manifest, int maxFramesPerClip, List<ConformanceRow> rows)
+        {
+            var label = truthObject.name;
             var mine = rigs.FindAll(r => r.Character == label);
-            var animator = truth.GetComponentInChildren<Animator>(true);
-            var driven = animator != null ? animator.gameObject : truth;
-            var all = truth.GetComponentsInChildren<Transform>(true);
-            var restPositions = new Vector3[all.Length];
-            var restRotations = new UnityEngine.Quaternion[all.Length];
-            var restScales = new Vector3[all.Length];
-            for (var i = 0; i < all.Length; i++)
-            {
-                restPositions[i] = all[i].localPosition;
-                restRotations[i] = all[i].localRotation;
-                restScales[i] = all[i].localScale;
-            }
-            var human = new List<(string name, Transform bone, bool position, bool twist)>();
-            for (var h = 0; h < (int)HumanBodyBones.LastBone; h++)
-            {
-                var bone = animator != null ? animator.GetBoneTransform((HumanBodyBones)h) : null;
-                if (bone != null)
-                    human.Add((bone.name, bone, Array.IndexOf(PositionBones, (HumanBodyBones)h) >= 0, Array.IndexOf(TwistBones, (HumanBodyBones)h) >= 0));
-            }
+            var truth = Sampled.Of(truthObject);
+            var perBone = perBoneObject != null ? Sampled.Of(perBoneObject) : null;
+            var saRigs = mine.FindAll(r => IsSa(r.Driver));
             for (var c = 0; c < clips.Count; c++)
             {
                 var clip = clips[c];
                 var accumulators = new Dictionary<DrivenRig, Accumulator>();
-                var pairs = new Dictionary<DrivenRig, Accumulator>();
+                var perBoneAccumulators = new Dictionary<DrivenRig, Accumulator>();
+                var pairs = new Dictionary<(DrivenRig sa, DrivenRig other), Accumulator>();
                 foreach (var rig in mine)
                 {
-                    accumulators[rig] = NewAccumulator(rig.Driver, label, manifest, c);
-                    if (rig.Driver != SaDriver)
-                        pairs[rig] = NewAccumulator(SaDriver + "-vs-" + rig.Driver, label, manifest, c);
+                    accumulators[rig] = NewAccumulator(rig.Driver, AvatarTruth, label, manifest, c);
+                    if (perBone != null)
+                        perBoneAccumulators[rig] = NewAccumulator(rig.Driver, PerBoneTruth, label, manifest, c);
+                    if (IsSa(rig.Driver))
+                        continue;
+                    foreach (var sa in saRigs)
+                        pairs[(sa, rig)] = NewAccumulator(sa.Driver + "-vs-" + rig.Driver, string.Empty, label, manifest, c);
                 }
                 if (clip == null)
                 {
                     foreach (var a in accumulators.Values)
+                    {
+                        a.Row.Status = "SKIP";
+                        a.Row.Reason = "clip asset missing";
+                    }
+                    foreach (var a in perBoneAccumulators.Values)
                     {
                         a.Row.Status = "SKIP";
                         a.Row.Reason = "clip asset missing";
@@ -372,7 +489,6 @@ namespace SA.Conformance
                     var rate = FamilyClips.ClipRate(clip);
                     var frames = FamilyClips.SampleCount(clip, rate);
                     var picks = Math.Min(frames, Math.Max(2, maxFramesPerClip));
-                    var sa = mine.Find(r => r.Driver == SaDriver);
                     var poses = new Dictionary<DrivenRig, Dictionary<string, RigidTransform>>();
                     for (var k = 0; k < picks; k++)
                     {
@@ -390,6 +506,11 @@ namespace SA.Conformance
                             {
                                 acc.Row.Status = "SKIP";
                                 acc.Row.Reason = reason;
+                                if (perBoneAccumulators.TryGetValue(rig, out var other))
+                                {
+                                    other.Row.Status = "SKIP";
+                                    other.Row.Reason = reason;
+                                }
                                 continue;
                             }
                             active.Add(rig);
@@ -400,71 +521,57 @@ namespace SA.Conformance
                         foreach (var rig in active)
                             drivers.Find(d => d.Name == rig.Driver).Pose(world, rig, c, clip, drive, out _);
                         Step(world);
-                        for (var i = 0; i < all.Length; i++)
-                        {
-                            all[i].localPosition = restPositions[i];
-                            all[i].localRotation = restRotations[i];
-                            all[i].localScale = restScales[i];
-                        }
-                        clip.SampleAnimation(driven, (float)seconds);
-                        var rootInverse = math.inverse(new RigidTransform(truth.transform.rotation, truth.transform.position));
+                        var rootInverse = truth.Sample(clip, seconds);
+                        var perBoneInverse = perBone != null ? perBone.Sample(clip, seconds) : RigidTransform.identity;
                         poses.Clear();
                         foreach (var rig in active)
                         {
                             var driver = drivers.Find(d => d.Name == rig.Driver);
-                            var rigWorld = Read(world, rig.Entity);
-                            var rigInverse = math.inverse(rigWorld);
+                            var rigInverse = math.inverse(Read(world, rig.Entity));
                             var bones = new Dictionary<string, RigidTransform>(StringComparer.Ordinal);
-                            foreach (var (name, _, _, _) in human)
+                            foreach (var (name, _, _, _) in truth.Human)
                                 if (rig.Bones.TryGetValue(name, out var entity))
                                     bones[name] = math.mul(rigInverse, Read(world, entity));
                             poses[rig] = bones;
-                            var acc = accumulators[rig];
-                            foreach (var (name, bone, position, twist) in human)
-                            {
-                                if (!bones.TryGetValue(name, out var pose))
-                                {
-                                    acc.Rotation(float.PositiveInfinity, name + " has no entity", twist);
-                                    continue;
-                                }
-                                var expected = new RigidTransform(bone.rotation, bone.position);
-                                if (driver.RootRelative)
-                                    expected = math.mul(rootInverse, expected);
-                                acc.Rotation(Angle(expected.rot, pose.rot), name + "@" + seconds.ToString("0.###", CultureInfo.InvariantCulture) + "s", twist);
-                                if (position)
-                                    acc.Position(math.distance(expected.pos, pose.pos) * 100f);
-                            }
-                            acc.Row.Frames++;
+                            Compare(accumulators[rig], truth, rootInverse, driver.RootRelative, bones, seconds);
+                            if (perBone != null)
+                                Compare(perBoneAccumulators[rig], perBone, perBoneInverse, driver.RootRelative, bones, seconds);
                         }
-                        if (sa == null || !poses.TryGetValue(sa, out var saBones))
-                            continue;
-                        foreach (var rig in active)
+                        foreach (var pair in pairs)
                         {
-                            if (rig == sa || !poses.TryGetValue(rig, out var other))
+                            var (sa, other) = pair.Key;
+                            if (!poses.TryGetValue(sa, out var saBones) || !poses.TryGetValue(other, out var otherBones))
                                 continue;
-                            var driver = drivers.Find(d => d.Name == rig.Driver);
-                            var pair = pairs[rig];
-                            foreach (var (name, _, position, twist) in human)
+                            var driver = drivers.Find(d => d.Name == other.Driver);
+                            foreach (var (name, _, position, twist) in truth.Human)
                             {
-                                if (!saBones.TryGetValue(name, out var a) || !other.TryGetValue(name, out var b))
+                                if (!saBones.TryGetValue(name, out var a) || !otherBones.TryGetValue(name, out var b))
                                     continue;
                                 if (driver.RootRelative)
                                     a = math.mul(rootInverse, a);
-                                pair.Rotation(Angle(a.rot, b.rot), name + "@" + seconds.ToString("0.###", CultureInfo.InvariantCulture) + "s", twist);
+                                pair.Value.Rotation(Angle(a.rot, b.rot), name + "@" + seconds.ToString("0.###", CultureInfo.InvariantCulture) + "s", twist);
                                 if (position)
-                                    pair.Position(math.distance(a.pos, b.pos) * 100f);
+                                    pair.Value.Position(math.distance(a.pos, b.pos) * 100f);
                             }
-                            pair.Row.Frames++;
+                            pair.Value.Row.Frames++;
                         }
                     }
                     foreach (var pair in pairs)
-                        if (accumulators[pair.Key].Row.Status == "SKIP" || sa == null || accumulators[sa].Row.Status == "SKIP")
+                    {
+                        var (sa, other) = pair.Key;
+                        if (accumulators[other].Row.Status == "SKIP" || accumulators[sa].Row.Status == "SKIP")
                         {
                             pair.Value.Row.Status = "SKIP";
-                            pair.Value.Row.Reason = accumulators[pair.Key].Row.Status == "SKIP" ? pair.Key.Driver + " cannot play the clip" : "SA cannot play the clip";
+                            pair.Value.Row.Reason = accumulators[other].Row.Status == "SKIP" ? other.Driver + " cannot play the clip" : sa.Driver + " cannot play the clip";
                         }
+                    }
                 }
                 foreach (var a in accumulators.Values)
+                {
+                    a.Finish();
+                    rows.Add(a.Row);
+                }
+                foreach (var a in perBoneAccumulators.Values)
                 {
                     a.Finish();
                     rows.Add(a.Row);
@@ -477,10 +584,11 @@ namespace SA.Conformance
             }
         }
 
-        static Accumulator NewAccumulator(string driver, string character, ConformanceManifest manifest, int clip)
+        static Accumulator NewAccumulator(string driver, string truth, string character, ConformanceManifest manifest, int clip)
         {
             var a = new Accumulator();
             a.Row.Driver = driver;
+            a.Row.Truth = truth;
             a.Row.Character = character;
             a.Row.Clip = manifest.ClipPaths[clip];
             a.Row.Take = manifest.ClipNames[clip];
@@ -516,7 +624,14 @@ namespace SA.Conformance
 
         sealed class SharedFamilyDriver : IConformanceDriver
         {
-            public string Name => SaDriver;
+            readonly string driverName;
+
+            public SharedFamilyDriver(string driverName)
+            {
+                this.driverName = driverName;
+            }
+
+            public string Name => driverName;
             public bool RootRelative => false;
 
             public bool Discover(World world, ConformanceManifest manifest, List<GameObject> truths, List<DrivenRig> rigs, out string error)
@@ -527,14 +642,14 @@ namespace SA.Conformance
                 using var entities = query.ToEntityArray(Allocator.Temp);
                 foreach (var truth in truths)
                 {
-                    var hash = RigBuilder.Hash(SaDriver + "|" + truth.name);
+                    var hash = RigBuilder.Hash(driverName + "|" + truth.name);
                     var found = Entity.Null;
                     foreach (var entity in entities)
                         if (manager.GetComponentData<SharedRig>(entity).NameHash == hash)
                             found = entity;
                     if (found == Entity.Null)
                     {
-                        error = "no baked SA rig for " + truth.name + " (" + entities.Length + " shared rigs in the world)";
+                        error = "no baked " + driverName + " rig for " + truth.name + " (" + entities.Length + " shared rigs in the world)";
                         return false;
                     }
                     if (manager.GetBuffer<SharedClipAsset>(found).Length != manifest.ClipPaths.Count)
@@ -542,7 +657,7 @@ namespace SA.Conformance
                         error = truth.name + " baked " + manager.GetBuffer<SharedClipAsset>(found).Length + " clips for " + manifest.ClipPaths.Count;
                         return false;
                     }
-                    var rig = new DrivenRig { Driver = SaDriver, Character = truth.name, Entity = found };
+                    var rig = new DrivenRig { Driver = driverName, Character = truth.name, Entity = found };
                     var byHash = new Dictionary<uint, string>();
                     foreach (var t in truth.GetComponentsInChildren<Transform>(true))
                         byHash[RigBuilder.Hash(t.name)] = t.name;

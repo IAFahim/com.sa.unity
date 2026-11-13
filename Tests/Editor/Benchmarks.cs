@@ -80,8 +80,7 @@ namespace SA.Tests
         [Explicit]
         public void FullSaFramePerCharacterCount(int count)
         {
-            if (!SystemInfo.supportsComputeShaders)
-                Assert.Ignore("compute shaders unavailable");
+            TestRigs.RequireGpu();
             var rig = BuildKyleSizedRig();
             var skin = BuildSkin();
             using var world = new World("SA.Benchmark");

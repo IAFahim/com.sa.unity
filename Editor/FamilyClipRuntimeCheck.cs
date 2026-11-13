@@ -81,8 +81,7 @@ namespace SA.Editor
             var table = TableBlob(plan, tableBytes);
             var placeholder = SharedFamilyBake.MakeClipBlob(bytes, loaded.Duration, loaded.SampleCount, clip.isLooping);
             var world = new World("SA.ClipSweep.Runtime");
-            var copy = UnityEngine.Object.Instantiate(plan.character);
-            copy.hideFlags = HideFlags.HideAndDontSave;
+            var copy = FamilyClips.SamplingCopy(plan);
             BlobAssetReference<RigBlob> rigBlob = default;
             try
             {

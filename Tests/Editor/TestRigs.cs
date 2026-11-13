@@ -1,7 +1,10 @@
 using System;
+using NUnit.Framework;
 using Unity.Collections;
 using Unity.Entities;
 using Unity.Mathematics;
+using UnityEngine;
+using UnityEngine.Rendering;
 
 namespace SA.Tests
 {
@@ -42,6 +45,21 @@ namespace SA.Tests
     internal static class TestRigs
     {
         public static readonly quaternion RestTilt = quaternion.Euler(0.4f, -0.7f, 1.1f);
+
+        public const string OpenGlReadback = "OpenGLCore: compute results read back in this Editor came back stale in measured batchmode runs (Unity picks OpenGLCore for -batchmode on Linux). Run the Editor on Vulkan (Player Settings, Linux, Graphics APIs) to test the GPU path.";
+
+        public static void RequireGpu()
+        {
+            if (!SystemInfo.supportsComputeShaders)
+                Assert.Ignore("compute shaders unavailable");
+            RequireReliableReadback();
+        }
+
+        public static void RequireReliableReadback()
+        {
+            if (SystemInfo.graphicsDeviceType == GraphicsDeviceType.OpenGLCore)
+                Assert.Ignore(OpenGlReadback);
+        }
 
         public static BonePose Pose(float x, quaternion rotation) => new BonePose { Position = new float3(x, 1f, 0f), Rotation = rotation, Scale = 1f };
 

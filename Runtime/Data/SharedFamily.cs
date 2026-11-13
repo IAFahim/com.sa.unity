@@ -3,6 +3,12 @@ using SA.Animation;
 
 namespace SA
 {
+    public enum HumanoidTwist : byte
+    {
+        Avatar = 0,
+        PerBone = 1
+    }
+
     public struct SharedTimeline : IComponentData { }
     public struct ShapeDriven : IComponentData
     {

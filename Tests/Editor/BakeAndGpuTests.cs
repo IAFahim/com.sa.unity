@@ -150,8 +150,7 @@ namespace SA.Tests
         [Test]
         public void GpuMatchesCpuEvaluationAndSkinning()
         {
-            if (!SystemInfo.supportsComputeShaders)
-                Assert.Ignore("compute shaders unavailable");
+            TestRigs.RequireGpu();
             var rig = TestRigs.Build(5, 0.8f);
             var skinBuilder = new BlobBuilder(Allocator.Temp);
             ref var skinRoot = ref skinBuilder.ConstructRoot<SkinBlob>();

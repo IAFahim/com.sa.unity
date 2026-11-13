@@ -722,28 +722,31 @@ namespace SA.Editor
                 Seek = 0,
                 Paused = 0
             });
-            if (!FamilyClips.TryPlan(root.gameObject, out var sampler, out var planError))
+            if (!FamilyClips.TryPlan(root.gameObject, authoring.Twist, out var sampler, out var planError))
             {
                 Debug.LogError("SA: " + authoring.name + " at '" + AssetPath(authoring) + "': " + planError + " Fix the rig, then rebake.", authoring);
                 return;
             }
-            var clipAssets = AddBuffer<SharedClipAsset>(entity);
-            var contributions = AddBuffer<SharedContribution>(entity);
-            for (var i = 0; i < clips.Count; i++)
+            using (sampler)
             {
-                if (!BakeClip(sampler, clips[i], plan, out var clipBlob))
-                    return;
-                clipAssets.Add(new SharedClipAsset { Value = clipBlob });
-                contributions.Add(new SharedContribution
+                var clipAssets = AddBuffer<SharedClipAsset>(entity);
+                var contributions = AddBuffer<SharedContribution>(entity);
+                for (var i = 0; i < clips.Count; i++)
                 {
-                    Clip = i,
-                    Weight = clips[i] == authoring.Autoplay ? 1f : 0f,
-                    Layer = 0,
-                    Mask = ushort.MaxValue,
-                    Speed = 1f,
-                    Offset = 0f,
-                    Sample = 0.0
-                });
+                    if (!BakeClip(sampler, clips[i], plan, out var clipBlob))
+                        return;
+                    clipAssets.Add(new SharedClipAsset { Value = clipBlob });
+                    contributions.Add(new SharedContribution
+                    {
+                        Clip = i,
+                        Weight = clips[i] == authoring.Autoplay ? 1f : 0f,
+                        Layer = 0,
+                        Mask = ushort.MaxValue,
+                        Speed = 1f,
+                        Offset = 0f,
+                        Sample = 0.0
+                    });
+                }
             }
         }
 

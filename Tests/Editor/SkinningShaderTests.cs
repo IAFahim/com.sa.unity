@@ -12,8 +12,7 @@ namespace SA.Tests
         [Test]
         public void SkinningSystemInitializesTheSentinelBeforeAnySkinIsLoaded()
         {
-            if (!SystemInfo.supportsComputeShaders)
-                Assert.Ignore("compute shaders unavailable");
+            TestRigs.RequireGpu();
             using var world = new global::Unity.Entities.World("SA.ShaderStartup");
             var system = world.GetOrCreateSystemManaged<SkinningSystem>();
             var matrices = new float4x4[1];
@@ -26,8 +25,7 @@ namespace SA.Tests
 
         static float4[] Dispatch(float4x4[] palette, uint4 packed, float3 position, float3 normal, float3 tangent, uint matrixBase = 1)
         {
-            if (!SystemInfo.supportsComputeShaders)
-                Assert.Ignore("compute shaders unavailable");
+            TestRigs.RequireGpu();
             var shader = AssetDatabase.LoadAssetAtPath<ComputeShader>("Packages/com.sa.unity/Tests/Editor/SkinningProof.compute");
             Assert.IsNotNull(shader);
             var kernel = shader.FindKernel("CheckVertex");

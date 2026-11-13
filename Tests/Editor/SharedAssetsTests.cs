@@ -139,6 +139,7 @@ namespace SA.Tests
             Assert.AreEqual(first[0].Value, CachedClip(store, a, aBones, idle));
             if (!SystemInfo.supportsComputeShaders)
                 return;
+            TestRigs.RequireReliableReadback();
             using var registry = new GpuRegistry();
             registry.Add(rig);
             registry.Add(sameRig);
@@ -331,6 +332,7 @@ namespace SA.Tests
             Assert.AreEqual(3f, bPose.Position.x, 1e-5f);
             if (!SystemInfo.supportsComputeShaders)
                 return;
+            TestRigs.RequireReliableReadback();
             using var pipeline = new GpuPipeline();
             rig.Register(pipeline.Registry);
             var sampleBase = pipeline.Registry.ClipSamples[rig.Clips[0].Value.Value.Id];
@@ -362,8 +364,7 @@ namespace SA.Tests
         [Test]
         public void SkinningSystemRegistersSharedAndChangedAssetTables()
         {
-            if (!SystemInfo.supportsComputeShaders)
-                Assert.Ignore("compute shaders unavailable");
+            TestRigs.RequireGpu();
             using var rig = TestRigs.Build();
             using var replacement = TestRigs.Build(5);
             using var skinBuilder = new BlobBuilder(Allocator.Temp);

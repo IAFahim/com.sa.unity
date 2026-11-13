@@ -11,9 +11,11 @@ using Quaternion = SA.Motion.Numerics.Quaternion;
 
 namespace SA.Editor
 {
-    public sealed class FamilyRigPlan
+    public sealed class FamilyRigPlan : IDisposable
     {
         internal GameObject character;
+        internal HumanoidTwist twist;
+        internal Avatar samplingAvatar;
         internal Transform[] bones = Array.Empty<Transform>();
         internal string[] paths = Array.Empty<string>();
         internal int[] parents = Array.Empty<int>();
@@ -55,6 +57,15 @@ namespace SA.Editor
         public bool CalibratedFromAvatar => calibratedFromAvatar;
         public AssetId Family => family;
         public AssetId Target => target;
+        public HumanoidTwist Twist => twist;
+        public Avatar SamplingAvatar => samplingAvatar;
+
+        public void Dispose()
+        {
+            if (samplingAvatar != null)
+                UnityEngine.Object.DestroyImmediate(samplingAvatar);
+            samplingAvatar = null;
+        }
     }
 
     public readonly struct AdaptiveSampling
@@ -91,6 +102,8 @@ namespace SA.Editor
 
         public const float JumpDegrees = 90f;
 
+        public const int JumpProbeSteps = 2 * MaxRateMultiplier;
+
         const float ScaleTolerance = 1e-4f;
         const int LeftUpperLeg = 48;
         const int RightUpperLeg = 52;
@@ -103,7 +116,10 @@ namespace SA.Editor
 
         static Dictionary<string, int> conventions;
 
-        public static bool TryPlan(GameObject character, out FamilyRigPlan plan, out string error)
+        public static bool TryPlan(GameObject character, out FamilyRigPlan plan, out string error) =>
+            TryPlan(character, HumanoidTwist.Avatar, out plan, out error);
+
+        public static bool TryPlan(GameObject character, HumanoidTwist twist, out FamilyRigPlan plan, out string error)
         {
             plan = null;
             error = string.Empty;
@@ -114,7 +130,7 @@ namespace SA.Editor
             }
             if (!SharedFamilyBake.CheckFamilyId(out error))
                 return false;
-            var result = new FamilyRigPlan { character = character };
+            var result = new FamilyRigPlan { character = character, twist = twist };
             result.canonicalParents = new int[CanonicalBones];
             result.canonicalReference = new Pose[CanonicalBones];
             if (CanonicalHumanoid.WriteReference(result.canonicalParents, result.canonicalReference) != AnimationError.None)
@@ -164,6 +180,15 @@ namespace SA.Editor
             result.hips = result.boneOfCanonical[1];
             if (!Calibrate(result, human ? animator.avatar : null, out error))
                 return false;
+            if (twist == HumanoidTwist.PerBone && human)
+            {
+                result.samplingAvatar = PerBoneTwistAvatar(animator);
+                if (result.samplingAvatar == null)
+                {
+                    error = "the avatar of '" + character.name + "' could not be rebuilt with per-bone twist.";
+                    return false;
+                }
+            }
             var identityNames = new string[count];
             for (var b = 0; b < count; b++)
                 identityNames[b] = result.paths[b] + "#" + skeleton[b].name;
@@ -195,6 +220,43 @@ namespace SA.Editor
             }
             plan = result;
             return true;
+        }
+
+        public static Avatar PerBoneTwistAvatar(Animator animator)
+        {
+            if (animator == null || animator.avatar == null || !animator.avatar.isValid || !animator.avatar.isHuman)
+                return null;
+            var description = animator.avatar.humanDescription;
+            description.upperArmTwist = 1f;
+            description.lowerArmTwist = 1f;
+            description.upperLegTwist = 1f;
+            description.lowerLegTwist = 1f;
+            var avatar = AvatarBuilder.BuildHumanAvatar(animator.gameObject, description);
+            if (avatar == null)
+                return null;
+            if (!avatar.isValid || !avatar.isHuman)
+            {
+                UnityEngine.Object.DestroyImmediate(avatar);
+                return null;
+            }
+            avatar.name = animator.avatar.name + " (per-bone twist)";
+            avatar.hideFlags = HideFlags.HideAndDontSave;
+            return avatar;
+        }
+
+        public static GameObject SamplingCopy(FamilyRigPlan plan)
+        {
+            if (plan == null || plan.character == null)
+                return null;
+            var copy = UnityEngine.Object.Instantiate(plan.character);
+            copy.hideFlags = HideFlags.HideAndDontSave;
+            if (plan.samplingAvatar != null)
+            {
+                var animator = copy.GetComponentInChildren<Animator>(true);
+                if (animator != null)
+                    animator.avatar = plan.samplingAvatar;
+            }
+            return copy;
         }
 
         public static bool TrySample(FamilyRigPlan plan, AnimationClip clip, out Pose[] canonicalSamples, out RigidPose[] planarRoot,
@@ -262,6 +324,7 @@ namespace SA.Editor
             var multiplier = 1;
             var estimate = float.NaN;
             var jumpCount = 0;
+            var probed = new Dictionary<int, bool>();
             while (multiplier < maxMultiplier && clip.length > 0f)
             {
                 var current = multiplier * (baseFrames - 1) + 1;
@@ -274,7 +337,13 @@ namespace SA.Editor
                 KeepHemisphere(merged, finer, count);
                 if (!TryCanonical(plan, merged, finer, out var fineCanonical, out var fineRoot, out _, out error))
                     return false;
-                var jumps = Jumps(fineCanonical, fineRoot, baseFrames, 2 * multiplier, plan.canonicalParents, out jumpCount);
+                var candidates = Jumps(fineCanonical, fineRoot, baseFrames, 2 * multiplier, plan.canonicalParents, out _);
+                if (!TryUnityJumps(plan, clip, baseFrames, candidates, probed, out var jumps, out _, out _, out error))
+                    return false;
+                jumpCount = 0;
+                foreach (var jump in jumps)
+                    if (jump)
+                        jumpCount++;
                 if (!TryInBetween(plan, clip, fineCanonical, fineRoot, current, multiplier, jumps, out estimate, out error))
                     return false;
                 if (estimate <= toleranceDegrees)
@@ -362,6 +431,76 @@ namespace SA.Editor
                     jumpCount++;
             }
             return jumps;
+        }
+
+        public static bool TryUnityJumps(FamilyRigPlan plan, AnimationClip clip, int baseFrames, bool[] candidates, Dictionary<int, bool> probed,
+            out bool[] jumps, out float[] stepDegrees, out int[] stepBone, out string error)
+        {
+            error = string.Empty;
+            var intervals = Math.Max(1, baseFrames - 1);
+            jumps = new bool[intervals];
+            stepDegrees = new float[intervals];
+            stepBone = new int[intervals];
+            for (var j = 0; j < intervals; j++)
+                stepBone[j] = -1;
+            if (plan == null || clip == null || candidates == null || !(clip.length > 0f))
+                return true;
+            var pending = new List<int>();
+            for (var j = 0; j < intervals && j < candidates.Length; j++)
+            {
+                if (!candidates[j])
+                    continue;
+                if (probed != null && probed.TryGetValue(j, out var known))
+                {
+                    jumps[j] = known;
+                    continue;
+                }
+                pending.Add(j);
+            }
+            if (pending.Count == 0)
+                return true;
+            var steps = JumpProbeSteps;
+            var times = new double[pending.Count * (steps + 1)];
+            for (var p = 0; p < pending.Count; p++)
+                for (var k = 0; k <= steps; k++)
+                    times[p * (steps + 1) + k] = Math.Min(clip.length, clip.length * (pending[p] + k / (double)steps) / intervals);
+            if (!TrySampleBonesAt(plan, clip, times, out var locals, out error))
+                return false;
+            var count = plan.bones.Length;
+            var frame = new Pose[count];
+            var model = new RigidPose[(steps + 1) * count];
+            var scratch = new RigidPose[count];
+            for (var p = 0; p < pending.Count; p++)
+            {
+                for (var k = 0; k <= steps; k++)
+                {
+                    Array.Copy(locals, (p * (steps + 1) + k) * count, frame, 0, count);
+                    if (RigidMath.Model(plan.parents, frame, scratch) != AnimationError.None)
+                    {
+                        error = "jump probe pose failed to compose.";
+                        return false;
+                    }
+                    Array.Copy(scratch, 0, model, k * count, count);
+                }
+                var j = pending[p];
+                for (var k = 0; k + 2 <= steps; k += 2)
+                    for (var b = 1; b < count; b++)
+                    {
+                        if (plan.canonicalOfBone[b] <= 0)
+                            continue;
+                        var turn = FamilyClipSweep.Degrees(model[k * count + b].Rotation, model[(k + 1) * count + b].Rotation)
+                            + FamilyClipSweep.Degrees(model[(k + 1) * count + b].Rotation, model[(k + 2) * count + b].Rotation);
+                        if (turn > stepDegrees[j])
+                        {
+                            stepDegrees[j] = turn;
+                            stepBone[j] = b;
+                        }
+                    }
+                jumps[j] = stepDegrees[j] > JumpDegrees;
+                if (probed != null)
+                    probed[j] = jumps[j];
+            }
+            return true;
         }
 
         static bool TryInBetween(FamilyRigPlan plan, AnimationClip clip, Pose[] fineCanonical, RigidPose[] fineRoot, int frames, int multiplier, bool[] jumps,
@@ -608,8 +747,7 @@ namespace SA.Editor
             }
             var frames = times.Length;
             var count = plan.bones.Length;
-            var copy = UnityEngine.Object.Instantiate(plan.character);
-            copy.hideFlags = HideFlags.HideAndDontSave;
+            var copy = SamplingCopy(plan);
             try
             {
                 var top = copy.transform;
