@@ -1,3 +1,8 @@
+0.3.7
+-----
+
+- `ShapeAuthoring` no longer appears in **Add Component**: SA.Shape (SH4 physical sync, wardrobe validation) is not part of the sa-inbetween designer playtest, so a designer setting up a character for Inbetween cannot add a half-built feature by accident. Existing scenes, prefabs and code that add the component are unchanged.
+
 0.3.6
 -----
 

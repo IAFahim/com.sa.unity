@@ -14,6 +14,7 @@ namespace SA.Shape.Unity
     }
 
     [DisallowMultipleComponent]
+    [AddComponentMenu("")]
     public class ShapeAuthoring : MonoBehaviour
     {
         public SharedFamilyAuthoring Family;
