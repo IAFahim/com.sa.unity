@@ -20,7 +20,7 @@ namespace SA.Tests
         const int Steps = 36;
         const string TraceName = "SharedFamilyTrace.bytes";
 
-        sealed class Stage : IDisposable
+        internal sealed class Stage : IDisposable
         {
             public World World;
             public SharedFamilySystem System;
@@ -52,7 +52,7 @@ namespace SA.Tests
 
         static int[] SmallRoles() => new[] { 0, 1, 2, 3, 48, 49, 50 };
 
-        static int[] SmallParents() => new[] { -1, 0, 1, 2, 1, 4, 5 };
+        internal static int[] SmallParents() => new[] { -1, 0, 1, 2, 1, 4, 5 };
 
         static Pose Turned(in Pose reference, Float3 axis, float radians, Float3 offset)
         {
@@ -90,7 +90,7 @@ namespace SA.Tests
             return samples;
         }
 
-        static BlobAssetReference<SharedClipData> Clip(Stage stage, Pose[] reference, int frames, double duration, float bend, double phase)
+        internal static BlobAssetReference<SharedClipData> Clip(Stage stage, Pose[] reference, int frames, double duration, float bend, double phase)
         {
             Assert.IsTrue(SharedFamilyBake.EncodeCanonicalSamples(Motion(reference, frames, bend, phase), frames, duration, true, out var bytes, out var error), error);
             var blob = SharedFamilyBake.MakeClipBlob(bytes, duration, frames, true);
@@ -107,7 +107,7 @@ namespace SA.Tests
             return blob;
         }
 
-        static BlobAssetReference<SharedRetargetData> SmallTable(Stage stage, Pose[] reference)
+        internal static BlobAssetReference<SharedRetargetData> SmallTable(Stage stage, Pose[] reference)
         {
             var roles = SmallRoles();
             var calibration = new Pose[roles.Length];
@@ -116,7 +116,7 @@ namespace SA.Tests
             return Table(stage, SmallParents(), calibration, roles, 1f);
         }
 
-        static BlobAssetReference<SharedRetargetData> FullTable(Stage stage, Pose[] reference, int[] parents)
+        internal static BlobAssetReference<SharedRetargetData> FullTable(Stage stage, Pose[] reference, int[] parents)
         {
             var calibration = (Pose[])reference.Clone();
             calibration[11] = Turned(reference[11], new Float3(0f, 0f, 1f), 0.35f, Float3.Zero);
@@ -128,7 +128,7 @@ namespace SA.Tests
             return Table(stage, parents, calibration, sourceMap, 1.25f);
         }
 
-        static Entity Rig(Stage stage, int[] parents, BlobAssetReference<SharedRetargetData> table, BlobAssetReference<SharedClipData>[] clips, float[] weights, float offset)
+        internal static Entity Rig(Stage stage, int[] parents, BlobAssetReference<SharedRetargetData> table, BlobAssetReference<SharedClipData>[] clips, float[] weights, float offset)
         {
             var manager = stage.World.EntityManager;
             var builder = new BlobBuilder(Allocator.Temp);
