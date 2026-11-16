@@ -131,6 +131,7 @@ namespace SA.Tests
             var json = $"{{\n  \"Characters\": {count},\n  \"Bones\": {Bones},\n  \"CpuSubmitMsAvg\": {Average(cpuMs):F3},\n  \"CpuSubmitMsP95\": {cpuMs[(int)(cpuMs.Count * 0.95f)]:F3},\n  \"CpuPlusGpuMsAvg\": {Average(totalMs):F3},\n  \"CpuPlusGpuMsP95\": {totalMs[(int)(totalMs.Count * 0.95f)]:F3},\n  \"Gpu\": \"{SystemInfo.graphicsDeviceName}\",\n  \"Api\": \"{SystemInfo.graphicsDeviceType}\",\n  \"Cpu\": \"{SystemInfo.processorType}\"\n}}";
             Directory.CreateDirectory("Temp/sa");
             File.WriteAllText($"Temp/sa/micro_{count}.json", json);
+            NUnit.Framework.TestContext.WriteLine(json);
             rig.Dispose();
             skin.Dispose();
         }
