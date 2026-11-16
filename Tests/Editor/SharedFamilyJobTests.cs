@@ -367,6 +367,48 @@ namespace SA.Tests
         }
 
         [Test]
+        public void TheRigJobRunsAsBurstCode()
+        {
+            using (var stage = Scene())
+            {
+                stage.Step(0f);
+                stage.Step(1f / 60f);
+                foreach (var rig in stage.Rigs)
+                    Assert.AreEqual(1, stage.World.EntityManager.GetComponentData<SharedPoseState>(rig).Native, "the rig job fell back to managed code");
+            }
+        }
+
+        [Test]
+        public void AClipAddedToARunningRigPlaysOnTheNextUpdate()
+        {
+            using (var stage = Scene())
+            {
+                var manager = stage.World.EntityManager;
+                var rig = stage.Rigs[1];
+                for (var step = 0; step < 6; step++)
+                    stage.Step(step == 0 ? 0f : 1f / 60f);
+                var before = manager.GetComponentData<LocalTransform>(manager.GetBuffer<BoneEntity>(rig)[2].Value).Rotation;
+                var added = Clip(stage, SharedFamilyBake.CanonicalReferencePoses(), 25, 1.5, 0.9f, 2.4);
+                var clips = manager.GetBuffer<SharedClipAsset>(rig);
+                var index = clips.Length;
+                clips.Add(new SharedClipAsset { Value = added });
+                var contributions = manager.GetBuffer<SharedContribution>(rig);
+                contributions.Add(new SharedContribution { Clip = index, Weight = 1f, Layer = 0, Mask = ushort.MaxValue, Speed = 1f, Offset = 0f, Sample = 0.0 });
+                SharedFamilyControl.PlaySingle(ref contributions, index);
+                for (var step = 0; step < 30; step++)
+                    stage.Step(1f / 60f);
+                Assert.AreEqual(1, manager.GetComponentData<SharedPoseState>(rig).Active);
+                var layouts = manager.GetBuffer<SharedClipLayoutRef>(rig);
+                Assert.AreEqual(index + 1, layouts.Length);
+                Assert.IsTrue(layouts[index].Value.IsCreated, "the added clip was not resolved");
+                Assert.Greater(manager.GetBuffer<SharedContribution>(rig)[index].Sample, 0.4);
+                var after = manager.GetComponentData<LocalTransform>(manager.GetBuffer<BoneEntity>(rig)[2].Value).Rotation;
+                var turned = math.degrees(2f * math.acos(math.min(1f, math.abs(math.dot(before.value, after.value)))));
+                Assert.Greater(turned, 1f, "the added clip did not move the spine");
+            }
+        }
+
+        [Test]
         [Explicit("Prints the cost of SharedFamilySystem for 1000 rigs of 56 bones")]
         public void CostOfTheSharedFamilySystemPerRig()
         {

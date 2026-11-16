@@ -1,3 +1,13 @@
+Unreleased
+----------
+
+- `SharedFamilySystem` now evaluates every rig in a Burst job on the worker threads instead of one rig at a time on the main thread. The public surface is unchanged (`SharedFamilySystem`, `SharedFamilyControl`, the `Last*` diagnostics), and so are the baked data and `SharedClipAsset` / `SharedContribution` / `SharedClock`. Measured on a Ryzen 5 8500G, Windows, Unity 7000.0.0a16, 1000 rigs of 56 bones: 22.50 ms per frame before, 2.82 ms after (median of 120 frames, 11 workers).
+- Same poses as before: `SharedFamilyJobTests` replays a 36-step scene (interrupt, weight change, seek, pause, second layer, a 0.3 s gap) and all 20,700 recorded values match the trace taken from the 0.3.7 system bit for bit.
+- Per-rig timeline state moved from a managed dictionary into components the system adds on a rig's first update. Clip and retarget-table bytes are parsed once into blobs when a rig's clip list or table changes, not every frame.
+- `LastActive`, `LastAction` and `LastSmooth` complete the job when they are read. A clip that cannot be loaded now warns when the rig's clip list is first resolved, not when the clip is first played.
+- Needs the `com.sa.motion.unity` bridge built from sa-motion `packet/C17-segment-sampling` (`SegmentSampling`, `SharedClipStorage`, and a packed-track reader Burst can compile).
+- `ShapeTimelineSystem` and the skin palette upload are unchanged and still run on the main thread.
+
 0.3.7
 -----
 

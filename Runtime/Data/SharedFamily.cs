@@ -1,5 +1,6 @@
 using Unity.Entities;
 using SA.Animation;
+using SA.Motion.Numerics;
 
 namespace SA
 {
@@ -68,5 +69,78 @@ namespace SA
     public struct SharedRetarget : IComponentData
     {
         public BlobAssetReference<SharedRetargetData> Value;
+    }
+
+    internal struct SharedClipLayout
+    {
+        public double Duration;
+        public int SampleCount;
+        public byte Loop;
+        public BlobArray<TrackDescription> Tracks;
+        public BlobArray<SegmentRange> Segments;
+        public BlobArray<TrackBlock> Blocks;
+        public BlobArray<byte> Bytes;
+    }
+
+    internal struct SharedTableLayout
+    {
+        public RetargetBinding Binding;
+        public BlobArray<RetargetRow> Rows;
+    }
+
+    internal struct SharedTableRef : IComponentData
+    {
+        public BlobAssetReference<SharedTableLayout> Value;
+        public long Source;
+    }
+
+    [InternalBufferCapacity(4)]
+    internal struct SharedClipLayoutRef : IBufferElementData
+    {
+        public BlobAssetReference<SharedClipLayout> Value;
+    }
+
+    internal struct SharedPoseState : IComponentData
+    {
+        public PoseFrameState Frame;
+        public long Table;
+        public int BoneCount;
+        public int Active;
+        public uint Stamp;
+        public FrameAction Action;
+        public AnimationError Smooth;
+        public byte Native;
+    }
+
+    [InternalBufferCapacity(0)]
+    internal struct SharedBoneState : IBufferElementData
+    {
+        public BoneFrameState Value;
+    }
+
+    [InternalBufferCapacity(0)]
+    internal struct SharedCommittedPose : IBufferElementData
+    {
+        public Pose Value;
+    }
+
+    [InternalBufferCapacity(8)]
+    internal struct SharedPreviousContribution : IBufferElementData
+    {
+        public ClipContribution Value;
+    }
+
+    [InternalBufferCapacity(8)]
+    internal struct SharedPreviousLayer : IBufferElementData
+    {
+        public LayerInput Value;
+    }
+
+    internal struct SharedFault
+    {
+        public Entity Rig;
+        public int Kind;
+        public int First;
+        public int Second;
     }
 }

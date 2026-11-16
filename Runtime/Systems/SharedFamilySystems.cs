@@ -1,6 +1,8 @@
 using System;
 using System.Collections.Generic;
+using Unity.Burst;
 using Unity.Collections;
+using Unity.Collections.LowLevel.Unsafe;
 using Unity.Entities;
 using Unity.Mathematics;
 using Unity.Transforms;
@@ -41,388 +43,593 @@ namespace SA
 
     [UpdateInGroup(typeof(AnimationSystemGroup))]
     [UpdateAfter(typeof(CpuPoseSystem))]
+    [Unity.Scripting.LifecycleManagement.AutoStaticsCleanup]
     public partial class SharedFamilySystem : SystemBase
     {
         public const int CanonicalBones = 56;
         const int MaxRigBones = 128;
-
-        sealed class RigState
-        {
-            public int BoneCount;
-            public int[] RigParents = Array.Empty<int>();
-            public PoseFrameState Frame;
-            public BoneFrameState[] Bones = Array.Empty<BoneFrameState>();
-            public BoneFrameState[] BoneScratch = Array.Empty<BoneFrameState>();
-            public ClipContribution[] PreviousContributions = new ClipContribution[SharedFamilyControl.MaxContributions];
-            public LayerInput[] PreviousLayers = new LayerInput[SharedFamilyControl.MaxContributions];
-            public Pose[] Committed = Array.Empty<Pose>();
-            public Pose[] PoseScratch = Array.Empty<Pose>();
-            public BlobAssetReference<SharedRetargetData> TableRef;
-            public RetargetBinding Binding;
-            public RetargetRow[] Rows = Array.Empty<RetargetRow>();
-        }
+        const int BoneCountFault = 1;
+        const int BoneEntityFault = 2;
+        const int FamilyFault = 3;
+        const int SampleFault = 4;
+        const int BlendFault = 5;
+        const int IdentityFault = 6;
+        const int RemapFault = 7;
+        const int SmoothFault = 8;
+        const int TableMissingFault = 9;
+        const int TableLoadFault = 10;
+        const int ClipLoadFault = 11;
 
         EntityQuery rigs;
-        readonly Dictionary<Entity, RigState> states = new Dictionary<Entity, RigState>();
-        readonly Dictionary<AssetId, SharedClip> cache = new Dictionary<AssetId, SharedClip>();
-        readonly List<SharedClip> pinned = new List<SharedClip>();
-        readonly HashSet<string> warned = new HashSet<string>();
-
-        NativeArray<Pose> decoded;
-        NativeArray<Pose> blended;
-        NativeArray<Pose> retargeted;
-        NativeArray<RigidPose> canonicalModel;
-        NativeArray<RigidPose> targetModel;
+        EntityQuery fresh;
+        EntityQuery changed;
+        EntityQuery tracked;
+        readonly Dictionary<AssetId, BlobAssetReference<SharedClipLayout>> clipLayouts = new Dictionary<AssetId, BlobAssetReference<SharedClipLayout>>();
+        readonly Dictionary<uint4, BlobAssetReference<SharedTableLayout>> tableLayouts = new Dictionary<uint4, BlobAssetReference<SharedTableLayout>>();
+        readonly Dictionary<uint4, AnimationError> tableErrors = new Dictionary<uint4, AnimationError>();
+        readonly HashSet<long> warned = new HashSet<long>();
         NativeArray<Pose> familyReference;
         NativeArray<int> canonicalParents;
-        NativeArray<PoseVelocity> zeroVelocity;
-        NativeArray<Pose> emptyPose;
-        NativeArray<float> emptyMask;
+        NativeQueue<SharedFault> faults;
+        ComponentTypeSet stateTypes;
+        uint stamp;
 
-        protected override void OnCreate()
-        {
-            rigs = GetEntityQuery(
-                ComponentType.ReadOnly<SharedTimeline>(),
-                ComponentType.ReadOnly<Rig>(),
-                ComponentType.ReadOnly<SharedClipAsset>(),
-                ComponentType.ReadOnly<SharedContribution>(),
-                ComponentType.ReadWrite<SharedClock>(),
-                ComponentType.ReadOnly<SharedRetarget>(),
-                ComponentType.ReadOnly<BoneEntity>(),
-                ComponentType.Exclude<ShapeDriven>());
-            decoded = new NativeArray<Pose>(SharedFamilyControl.MaxContributions * CanonicalBones, Allocator.Persistent);
-            blended = new NativeArray<Pose>(CanonicalBones, Allocator.Persistent);
-            retargeted = new NativeArray<Pose>(MaxRigBones, Allocator.Persistent);
-            canonicalModel = new NativeArray<RigidPose>(CanonicalBones, Allocator.Persistent);
-            targetModel = new NativeArray<RigidPose>(MaxRigBones, Allocator.Persistent);
-            familyReference = new NativeArray<Pose>(CanonicalBones, Allocator.Persistent);
-            canonicalParents = new NativeArray<int>(CanonicalBones, Allocator.Persistent);
-            zeroVelocity = new NativeArray<PoseVelocity>(MaxRigBones, Allocator.Persistent);
-            emptyPose = new NativeArray<Pose>(0, Allocator.Persistent);
-            emptyMask = new NativeArray<float>(0, Allocator.Persistent);
-            CanonicalHumanoid.WriteReference(canonicalParents.AsSpan(), familyReference.AsSpan());
-        }
-
-        protected override void OnDestroy()
-        {
-            decoded.Dispose();
-            blended.Dispose();
-            retargeted.Dispose();
-            canonicalModel.Dispose();
-            targetModel.Dispose();
-            familyReference.Dispose();
-            canonicalParents.Dispose();
-            zeroVelocity.Dispose();
-            emptyPose.Dispose();
-            emptyMask.Dispose();
-            states.Clear();
-            cache.Clear();
-            pinned.Clear();
-        }
+        static SharedFamilySystem latest;
+        static int lastActive;
+        static string lastAction = string.Empty;
+        static string lastSmooth = string.Empty;
 
         public static string LastWarning { get; private set; } = string.Empty;
-
-        void WarnOnce(string key, string message)
-        {
-            if (warned.Add(key))
-            {
-                LastWarning = message;
-                UnityEngine.Debug.LogWarning(message);
-            }
-        }
 
         public static int LastEntityCount { get; private set; }
 
         public static float LastStep { get; private set; }
 
-        public static int LastActive { get; private set; }
+        public static int LastActive
+        {
+            get
+            {
+                ReadLatest();
+                return lastActive;
+            }
+        }
 
-        public static string LastAction { get; private set; } = string.Empty;
+        public static string LastAction
+        {
+            get
+            {
+                ReadLatest();
+                return lastAction ?? string.Empty;
+            }
+        }
 
-        public static string LastSmooth { get; private set; } = string.Empty;
+        public static string LastSmooth
+        {
+            get
+            {
+                ReadLatest();
+                return lastSmooth ?? string.Empty;
+            }
+        }
+
+        protected override void OnCreate()
+        {
+            rigs = new EntityQueryBuilder(Allocator.Temp)
+                .WithAll<SharedTimeline, Rig, SharedClipAsset, SharedContribution>()
+                .WithAll<SharedClock, SharedRetarget, BoneEntity>()
+                .WithNone<ShapeDriven>()
+                .Build(this);
+            fresh = new EntityQueryBuilder(Allocator.Temp)
+                .WithAll<SharedTimeline, Rig, SharedClipAsset, SharedContribution>()
+                .WithAll<SharedClock, SharedRetarget, BoneEntity>()
+                .WithNone<ShapeDriven, SharedPoseState>()
+                .Build(this);
+            changed = new EntityQueryBuilder(Allocator.Temp)
+                .WithAll<SharedTimeline, Rig, SharedClipAsset, SharedRetarget>()
+                .WithAllRW<SharedTableRef>()
+                .WithAllRW<SharedClipLayoutRef>()
+                .WithNone<ShapeDriven>()
+                .Build(this);
+            changed.SetChangedVersionFilter(new[] { ComponentType.ReadOnly<SharedClipAsset>(), ComponentType.ReadOnly<SharedRetarget>() });
+            tracked = new EntityQueryBuilder(Allocator.Temp)
+                .WithAll<SharedTimeline, SharedPoseState>()
+                .WithNone<ShapeDriven>()
+                .Build(this);
+            stateTypes = new ComponentTypeSet(new[]
+            {
+                ComponentType.ReadWrite<SharedPoseState>(),
+                ComponentType.ReadWrite<SharedTableRef>(),
+                ComponentType.ReadWrite<SharedClipLayoutRef>(),
+                ComponentType.ReadWrite<SharedBoneState>(),
+                ComponentType.ReadWrite<SharedCommittedPose>(),
+                ComponentType.ReadWrite<SharedPreviousContribution>(),
+                ComponentType.ReadWrite<SharedPreviousLayer>()
+            });
+            familyReference = new NativeArray<Pose>(CanonicalBones, Allocator.Persistent);
+            canonicalParents = new NativeArray<int>(CanonicalBones, Allocator.Persistent);
+            faults = new NativeQueue<SharedFault>(Allocator.Persistent);
+            CanonicalHumanoid.WriteReference(canonicalParents.AsSpan(), familyReference.AsSpan());
+        }
+
+        protected override void OnDestroy()
+        {
+            CompleteDependency();
+            if (ReferenceEquals(latest, this))
+                latest = null;
+            familyReference.Dispose();
+            canonicalParents.Dispose();
+            faults.Dispose();
+            foreach (var layout in clipLayouts.Values)
+                if (layout.IsCreated)
+                    layout.Dispose();
+            foreach (var layout in tableLayouts.Values)
+                if (layout.IsCreated)
+                    layout.Dispose();
+            clipLayouts.Clear();
+            tableLayouts.Clear();
+            tableErrors.Clear();
+            warned.Clear();
+        }
 
         protected override void OnUpdate()
         {
-            var step = SystemAPI.Time.DeltaTime;
-            LastStep = step;
-            pinned.Clear();
-            var entities = rigs.ToEntityArray(Allocator.Temp);
-            LastEntityCount = entities.Length;
-            foreach (var entity in entities)
-                UpdateRig(entity, step);
+            CompleteDependency();
+            Report();
+            if (!fresh.IsEmptyIgnoreFilter)
+                EntityManager.AddComponent(fresh, stateTypes);
+            Resolve();
+            latest = this;
+            LastStep = SystemAPI.Time.DeltaTime;
+            LastEntityCount = rigs.CalculateEntityCount();
+            stamp++;
+            Dependency = new RigJob
+            {
+                DeltaTime = SystemAPI.Time.DeltaTime,
+                Stamp = stamp,
+                FamilyReference = familyReference,
+                CanonicalParents = canonicalParents,
+                Transforms = SystemAPI.GetComponentLookup<LocalTransform>(),
+                PostTransforms = SystemAPI.GetComponentLookup<PostTransformMatrix>(),
+                Faults = faults.AsParallelWriter()
+            }.ScheduleParallel(Dependency);
+        }
+
+        static void ReadLatest()
+        {
+            var system = latest;
+            if (system == null || system.World == null || !system.World.IsCreated)
+                return;
+            system.ReadLast();
+        }
+
+        void ReadLast()
+        {
+            var entities = tracked.ToEntityArray(Allocator.Temp);
+            for (var i = entities.Length - 1; i >= 0; i--)
+            {
+                var state = EntityManager.GetComponentData<SharedPoseState>(entities[i]);
+                if (state.Stamp != stamp)
+                    continue;
+                lastActive = state.Active;
+                lastAction = state.Action.ToString();
+                lastSmooth = state.Smooth.ToString();
+                break;
+            }
             entities.Dispose();
-            Entity dead = Entity.Null;
-            foreach (var pair in states)
-                if (!EntityManager.Exists(pair.Key) || !EntityManager.HasComponent<SharedTimeline>(pair.Key))
-                {
-                    dead = pair.Key;
-                    break;
-                }
-            if (dead != Entity.Null)
-                states.Remove(dead);
         }
 
-        unsafe void UpdateRig(Entity entity, float deltaTime)
+        void Warn(int kind, long subject, string message)
         {
-            var rigReference = EntityManager.GetComponentData<Rig>(entity);
-            if (!rigReference.Value.IsCreated)
+            if (!warned.Add(((long)kind << 40) ^ subject))
                 return;
-            ref var rig = ref rigReference.Value.Value;
-            var boneCount = rig.Bones.Length;
-            if (boneCount <= 0 || boneCount > MaxRigBones)
+            LastWarning = message;
+            UnityEngine.Debug.LogWarning(message);
+        }
+
+        void Report()
+        {
+            while (faults.TryDequeue(out var fault))
             {
-                WarnOnce("bones" + entity.Index, "SA: timeline rig has " + boneCount + " bones, expected 1.." + MaxRigBones + ".");
+                var kind = fault.Kind;
+                var error = ((AnimationError)fault.First).ToString();
+                var message = kind == BoneCountFault ? "SA: timeline rig has " + fault.First + " bones, expected 1.." + MaxRigBones + "."
+                    : kind == BoneEntityFault ? "SA: timeline rig has " + fault.First + " bone entities for " + fault.Second + " bones."
+                    : kind == FamilyFault ? "SA: timeline rig mixes clip families in one tick."
+                    : kind == SampleFault ? "SA: timeline clip sample failed (" + error + ")."
+                    : kind == BlendFault ? "SA: timeline blend failed (" + error + ")."
+                    : kind == IdentityFault ? "SA: timeline identity retarget failed (" + error + ")."
+                    : kind == RemapFault ? "SA: timeline retarget failed (" + error + ")."
+                    : "SA: timeline smoothing failed (" + error + ").";
+                Warn(kind, fault.Rig.Index, message);
+            }
+        }
+
+        unsafe void Resolve()
+        {
+            if (changed.IsEmpty)
                 return;
-            }
-            var clock = EntityManager.GetComponentData<SharedClock>(entity);
-            var advance = clock.Paused == 0 ? deltaTime : 0f;
-            if (advance < 0f)
-                advance = 0f;
-            if (advance > 0f)
+            var entities = changed.ToEntityArray(Allocator.Temp);
+            foreach (var entity in entities)
             {
-                clock.Seconds += advance;
-                clock.Tick++;
-            }
-            var seek = clock.Seek != 0;
-            clock.Seek = 0;
-            var tableReference = EntityManager.GetComponentData<SharedRetarget>(entity).Value;
-            if (!tableReference.IsCreated)
-            {
-                WarnOnce("table" + entity.Index, "SA: timeline rig is missing its retarget table.");
-                return;
-            }
-            if (!states.TryGetValue(entity, out var state) || state.BoneCount != boneCount)
-            {
-                state = new RigState { BoneCount = boneCount };
-                state.RigParents = new int[boneCount];
-                for (var b = 0; b < boneCount; b++)
-                    state.RigParents[b] = rig.Bones[b].Parent;
-                state.Bones = new BoneFrameState[boneCount];
-                state.BoneScratch = new BoneFrameState[boneCount];
-                state.Committed = new Pose[boneCount];
-                state.PoseScratch = new Pose[boneCount];
-                states[entity] = state;
-            }
-            if (!state.TableRef.Equals(tableReference) || state.Rows.Length == 0)
-            {
-                ref var tableBytes = ref tableReference.Value.Table;
-                var error = RetargetFile.Load(
-                    new ReadOnlySpan<byte>(tableBytes.GetUnsafePtr(), tableBytes.Length),
-                    tableReference.Value.Family, tableReference.Value.Target,
-                    canonicalParents.AsSpan(), familyReference.AsSpan(),
-                    out state.Binding, out state.Rows);
-                if (error != AnimationError.None)
+                var retarget = EntityManager.GetComponentData<SharedRetarget>(entity).Value;
+                EntityManager.SetComponentData(entity, new SharedTableRef
                 {
-                    WarnOnce("tableload" + entity.Index, "SA: timeline rig table failed to load (" + error + ").");
+                    Value = TableLayout(entity, retarget),
+                    Source = retarget.IsCreated ? (long)retarget.GetUnsafePtr() : 0
+                });
+                var clips = EntityManager.GetBuffer<SharedClipAsset>(entity, true);
+                var layouts = EntityManager.GetBuffer<SharedClipLayoutRef>(entity);
+                layouts.ResizeUninitialized(clips.Length);
+                for (var i = 0; i < clips.Length; i++)
+                    layouts[i] = new SharedClipLayoutRef { Value = ClipLayout(clips[i].Value) };
+            }
+            entities.Dispose();
+        }
+
+        unsafe BlobAssetReference<SharedTableLayout> TableLayout(Entity entity, BlobAssetReference<SharedRetargetData> retarget)
+        {
+            if (!retarget.IsCreated)
+            {
+                Warn(TableMissingFault, entity.Index, "SA: timeline rig is missing its retarget table.");
+                return default;
+            }
+            ref var data = ref retarget.Value;
+            var family = data.Family;
+            var target = data.Target;
+            var key = xxHash3.Hash128(data.Table.GetUnsafePtr(), data.Table.Length)
+                ^ new uint4((uint)family.A, (uint)(family.B >> 32), (uint)target.A, (uint)(target.B >> 32));
+            if (tableLayouts.TryGetValue(key, out var layout))
+            {
+                if (!layout.IsCreated)
+                    Warn(TableLoadFault, entity.Index, "SA: timeline rig table failed to load (" + tableErrors[key] + ").");
+                return layout;
+            }
+            var error = RetargetFile.Load(new ReadOnlySpan<byte>(data.Table.GetUnsafePtr(), data.Table.Length), family, target,
+                canonicalParents.AsSpan(), familyReference.AsSpan(), out var binding, out var rows);
+            if (error != AnimationError.None)
+            {
+                tableLayouts.Add(key, default);
+                tableErrors.Add(key, error);
+                Warn(TableLoadFault, entity.Index, "SA: timeline rig table failed to load (" + error + ").");
+                return default;
+            }
+            var builder = new BlobBuilder(Allocator.Temp);
+            ref var root = ref builder.ConstructRoot<SharedTableLayout>();
+            root.Binding = binding;
+            var stored = builder.Allocate(ref root.Rows, rows.Length);
+            for (var i = 0; i < rows.Length; i++)
+                stored[i] = rows[i];
+            layout = builder.CreateBlobAssetReference<SharedTableLayout>(Allocator.Persistent);
+            builder.Dispose();
+            tableLayouts.Add(key, layout);
+            return layout;
+        }
+
+        unsafe BlobAssetReference<SharedClipLayout> ClipLayout(BlobAssetReference<SharedClipData> clip)
+        {
+            if (!clip.IsCreated)
+                return default;
+            ref var data = ref clip.Value;
+            if (data.Bytes.Length == 0 || data.BoneCount != CanonicalBones)
+                return default;
+            var artifact = data.Artifact;
+            if (clipLayouts.TryGetValue(artifact, out var layout))
+                return layout;
+            var load = SharedClipReader.Load(new ReadOnlySpan<byte>(data.Bytes.GetUnsafePtr(), data.Bytes.Length), data.Family, familyReference.AsSpan(), out var shared);
+            var blocks = 0;
+            var bytes = 0;
+            if (load == AnimationError.None)
+                load = shared == null ? AnimationError.InvalidFormat : SharedClipStorage.Measure(shared, out blocks, out bytes);
+            if (load != AnimationError.None)
+            {
+                clipLayouts.Add(artifact, default);
+                Warn(ClipLoadFault, artifact.GetHashCode(), "SA: timeline clip failed to load (" + load + ").");
+                return default;
+            }
+            var builder = new BlobBuilder(Allocator.Temp);
+            ref var root = ref builder.ConstructRoot<SharedClipLayout>();
+            root.Duration = shared.Duration;
+            root.SampleCount = shared.SampleCount;
+            root.Loop = (byte)(shared.Loop ? 1 : 0);
+            var tracks = builder.Allocate(ref root.Tracks, shared.Tracks.Length);
+            for (var i = 0; i < shared.Tracks.Length; i++)
+                tracks[i] = shared.Tracks[i];
+            var segments = builder.Allocate(ref root.Segments, shared.Segments.Length);
+            var blockArray = builder.Allocate(ref root.Blocks, blocks);
+            var byteArray = builder.Allocate(ref root.Bytes, bytes);
+            var write = SharedClipStorage.Write(shared,
+                new Span<SegmentRange>(segments.GetUnsafePtr(), segments.Length),
+                new Span<TrackBlock>(blockArray.GetUnsafePtr(), blockArray.Length),
+                new Span<byte>(byteArray.GetUnsafePtr(), byteArray.Length));
+            if (write != AnimationError.None)
+            {
+                builder.Dispose();
+                clipLayouts.Add(artifact, default);
+                Warn(ClipLoadFault, artifact.GetHashCode(), "SA: timeline clip failed to load (" + write + ").");
+                return default;
+            }
+            layout = builder.CreateBlobAssetReference<SharedClipLayout>(Allocator.Persistent);
+            builder.Dispose();
+            clipLayouts.Add(artifact, layout);
+            return layout;
+        }
+
+        [BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.High)]
+        [WithAll(typeof(SharedTimeline))]
+        [WithNone(typeof(ShapeDriven))]
+        unsafe partial struct RigJob : IJobEntity
+        {
+            public float DeltaTime;
+            public uint Stamp;
+            [ReadOnly] public NativeArray<Pose> FamilyReference;
+            [ReadOnly] public NativeArray<int> CanonicalParents;
+            [NativeDisableParallelForRestriction] public ComponentLookup<LocalTransform> Transforms;
+            [NativeDisableParallelForRestriction] public ComponentLookup<PostTransformMatrix> PostTransforms;
+            public NativeQueue<SharedFault>.ParallelWriter Faults;
+
+            [BurstDiscard]
+            static void MarkManaged(ref byte native) => native = 0;
+
+            static ReadOnlySpan<T> View<T>(ref BlobArray<T> array) where T : unmanaged =>
+                new ReadOnlySpan<T>(array.GetUnsafePtr(), array.Length);
+
+            static void Clear<T>(DynamicBuffer<T> buffer, int length) where T : unmanaged, IBufferElementData
+            {
+                buffer.ResizeUninitialized(length);
+                UnsafeUtility.MemClear(buffer.GetUnsafePtr(), (long)length * UnsafeUtility.SizeOf<T>());
+            }
+
+            void Fault(Entity rig, int kind, int first, int second) =>
+                Faults.Enqueue(new SharedFault { Rig = rig, Kind = kind, First = first, Second = second });
+
+            void Execute(Entity entity, in Rig rigReference, in SharedTableRef table, in DynamicBuffer<SharedClipAsset> clips,
+                in DynamicBuffer<SharedClipLayoutRef> layouts, ref DynamicBuffer<SharedContribution> contributions, in DynamicBuffer<BoneEntity> bones,
+                ref SharedClock clockData, ref SharedPoseState state, ref DynamicBuffer<SharedBoneState> boneStates,
+                ref DynamicBuffer<SharedCommittedPose> committed, ref DynamicBuffer<SharedPreviousContribution> previousContributions,
+                ref DynamicBuffer<SharedPreviousLayer> previousLayers)
+            {
+                if (!rigReference.Value.IsCreated)
+                    return;
+                ref var rig = ref rigReference.Value.Value;
+                var boneCount = rig.Bones.Length;
+                if (boneCount <= 0 || boneCount > MaxRigBones)
+                {
+                    Fault(entity, BoneCountFault, boneCount, 0);
                     return;
                 }
-                state.TableRef = tableReference;
-                state.Frame = default;
-            }
-            var clips = EntityManager.GetBuffer<SharedClipAsset>(entity);
-            var contributions = EntityManager.GetBuffer<SharedContribution>(entity);
-            var bones = EntityManager.GetBuffer<BoneEntity>(entity);
-            if (bones.Length < boneCount)
-            {
-                WarnOnce("boneentities" + entity.Index, "SA: timeline rig has " + bones.Length + " bone entities for " + boneCount + " bones.");
-                return;
-            }
-            Span<ClipContribution> ordered = stackalloc ClipContribution[SharedFamilyControl.MaxContributions];
-            Span<int> clipFor = stackalloc int[SharedFamilyControl.MaxContributions];
-            var active = 0;
-            for (var i = 0; i < contributions.Length && active < SharedFamilyControl.MaxContributions; i++)
-            {
-                var element = contributions[i];
-                if (element.Weight <= 0f || element.Clip < 0 || element.Clip >= clips.Length)
-                    continue;
-                ref var blob = ref clips[element.Clip].Value.Value;
-                if (blob.Bytes.Length == 0 || blob.BoneCount != CanonicalBones)
-                    continue;
-                if (!cache.TryGetValue(blob.Artifact, out var shared))
+                var clock = clockData;
+                var advance = clock.Paused == 0 ? DeltaTime : 0f;
+                if (advance < 0f)
+                    advance = 0f;
+                if (advance > 0f)
                 {
-                    var load = SharedClipReader.Load(
-                        new ReadOnlySpan<byte>(blob.Bytes.GetUnsafePtr(), blob.Bytes.Length),
-                        blob.Family, familyReference.AsSpan(), out shared);
-                    if (load != AnimationError.None || shared == null)
-                    {
-                        WarnOnce("clip" + blob.Artifact.GetHashCode(), "SA: timeline clip failed to load (" + load + ").");
+                    clock.Seconds += advance;
+                    clock.Tick++;
+                }
+                var seek = clock.Seek != 0;
+                clock.Seek = 0;
+                if (!table.Value.IsCreated)
+                    return;
+                if (state.BoneCount != boneCount)
+                {
+                    state = default;
+                    state.BoneCount = boneCount;
+                    Clear(boneStates, boneCount);
+                    Clear(committed, boneCount);
+                    Clear(previousContributions, SharedFamilyControl.MaxContributions);
+                    Clear(previousLayers, SharedFamilyControl.MaxContributions);
+                }
+                if (state.Table != table.Source)
+                {
+                    state.Table = table.Source;
+                    state.Frame = default;
+                }
+                if (bones.Length < boneCount)
+                {
+                    Fault(entity, BoneEntityFault, bones.Length, boneCount);
+                    return;
+                }
+                Span<ClipContribution> ordered = stackalloc ClipContribution[SharedFamilyControl.MaxContributions];
+                Span<int> clipFor = stackalloc int[SharedFamilyControl.MaxContributions];
+                var active = 0;
+                for (var i = 0; i < contributions.Length && active < SharedFamilyControl.MaxContributions; i++)
+                {
+                    var element = contributions[i];
+                    if (element.Weight <= 0f || element.Clip < 0 || element.Clip >= clips.Length || !clips[element.Clip].Value.IsCreated)
                         continue;
-                    }
-                    cache.Add(blob.Artifact, shared);
+                    ref var blob = ref clips[element.Clip].Value.Value;
+                    if (blob.Bytes.Length == 0 || blob.BoneCount != CanonicalBones)
+                        continue;
+                    if (element.Clip >= layouts.Length || !layouts[element.Clip].Value.IsCreated)
+                        continue;
+                    var sample = seek ? clock.Seconds + element.Offset : element.Sample + advance * element.Speed;
+                    sample = WrapSample(sample, blob.Duration, blob.Loop != 0);
+                    element.Sample = sample;
+                    contributions[i] = element;
+                    ordered[active] = new ClipContribution(new ClipHandle((uint)element.Clip, 1), sample, element.Weight, element.Layer, element.Mask);
+                    clipFor[active] = element.Clip;
+                    active++;
                 }
-                if (!pinned.Contains(shared))
-                    pinned.Add(shared);
-                var sample = seek ? clock.Seconds + element.Offset : element.Sample + advance * element.Speed;
-                sample = WrapSample(sample, blob.Duration, blob.Loop != 0);
-                element.Sample = sample;
-                contributions[i] = element;
-                ordered[active] = new ClipContribution(new ClipHandle((uint)element.Clip, 1), sample, element.Weight, element.Layer, element.Mask);
-                clipFor[active] = element.Clip;
-                active++;
-            }
-            if (active == 0)
-            {
-                EntityManager.SetComponentData(entity, clock);
-                return;
-            }
-            SortByLayer(ordered.Slice(0, active), clipFor.Slice(0, active));
-            Span<LayerInput> layers = stackalloc LayerInput[SharedFamilyControl.MaxContributions];
-            var layerCount = BuildLayers(ordered.Slice(0, active), layers);
-            var family = clips[clipFor[0]].Value.Value.Family;
-            for (var i = 1; i < active; i++)
-            {
-                if (clips[clipFor[i]].Value.Value.Family != family)
+                if (active == 0)
                 {
-                    WarnOnce("family" + entity.Index, "SA: timeline rig mixes clip families in one tick.");
-                    EntityManager.SetComponentData(entity, clock);
+                    clockData = clock;
                     return;
                 }
-            }
-            for (var i = 0; i < active; i++)
-            {
-                var shared = cache[clips[clipFor[i]].Value.Value.Artifact];
-                var slice = decoded.GetSubArray(i * CanonicalBones, CanonicalBones).AsSpan();
-                var error = shared.Sample(ordered[i].SampleSeconds, familyReference.AsSpan(), slice);
-                if (error != AnimationError.None)
+                SortByLayer(ordered.Slice(0, active), clipFor.Slice(0, active));
+                Span<LayerInput> layers = stackalloc LayerInput[SharedFamilyControl.MaxContributions];
+                var layerCount = BuildLayers(ordered.Slice(0, active), layers);
+                var family = clips[clipFor[0]].Value.Value.Family;
+                for (var i = 1; i < active; i++)
                 {
-                    WarnOnce("sample" + entity.Index, "SA: timeline clip sample failed (" + error + ").");
-                    EntityManager.SetComponentData(entity, clock);
-                    return;
-                }
-            }
-            var blend = CanonicalBlend.Evaluate(
-                ordered.Slice(0, active), layers.Slice(0, layerCount), decoded.GetSubArray(0, active * CanonicalBones).AsSpan(),
-                emptyPose.AsSpan(), emptyMask.AsSpan(),
-                familyReference.AsSpan(), blended.AsSpan());
-            if (blend != AnimationError.None)
-            {
-                WarnOnce("blend" + entity.Index, "SA: timeline blend failed (" + blend + ").");
-                EntityManager.SetComponentData(entity, clock);
-                return;
-            }
-            var destination = retargeted.GetSubArray(0, boneCount).AsSpan();
-            if (family == state.Binding.Target && boneCount == CanonicalBones)
-            {
-                var identity = IdentityRetarget.Apply(family, state.Binding.Target,
-                    new ReadOnlySpan<int>(state.RigParents), blended.AsSpan(),
-                    targetModel.GetSubArray(0, boneCount).AsSpan(), destination);
-                if (identity != AnimationError.None)
-                {
-                    WarnOnce("identity" + entity.Index, "SA: timeline identity retarget failed (" + identity + ").");
-                    EntityManager.SetComponentData(entity, clock);
-                    return;
-                }
-            }
-            else
-            {
-                var remap = RetargetTable.Apply(family, state.Binding,
-                    canonicalParents.AsSpan(), blended.AsSpan(), state.Rows,
-                    canonicalModel.AsSpan(), targetModel.GetSubArray(0, boneCount).AsSpan(), destination);
-                if (remap != AnimationError.None)
-                {
-                    WarnOnce("remap" + entity.Index, "SA: timeline retarget failed (" + remap + ").");
-                    EntityManager.SetComponentData(entity, clock);
-                    return;
-                }
-                CanonicalTranslation.Apply(state.Rows, state.Binding, canonicalParents.AsSpan(), blended.AsSpan(), familyReference.AsSpan(),
-                    canonicalModel.AsSpan(), targetModel.GetSubArray(0, boneCount).AsSpan(), destination);
-            }
-            if (!SameMembers(ordered.Slice(0, active), state, active))
-                clock.Continuity++;
-            var frame = new AnimationFrame(clock.Tick, 0, clock.Continuity, clock.Seconds, advance, clock.Transition,
-                seek ? FrameMode.Seek : FrameMode.Advance, 0.1f);
-            var smooth = TimelinePose.Evaluate(frame, ordered.Slice(0, active), layers.Slice(0, layerCount), true, destination,
-                zeroVelocity.GetSubArray(0, boneCount).AsSpan(), ref state.Frame, state.Bones, state.BoneScratch,
-                state.PreviousContributions, state.PreviousLayers, state.Committed, state.PoseScratch, out var action);
-            LastActive = active;
-            LastAction = action.ToString();
-            LastSmooth = smooth.ToString();
-            if (smooth != AnimationError.None)
-            {
-                WarnOnce("smooth" + entity.Index, "SA: timeline smoothing failed (" + smooth + ").");
-                EntityManager.SetComponentData(entity, clock);
-                return;
-            }
-            for (var b = 0; b < boneCount; b++)
-            {
-                var boneEntity = bones[b].Value;
-                if (!EntityManager.HasComponent<LocalTransform>(boneEntity))
-                    continue;
-                var pose = state.Committed[b];
-                var uniform = pose.Scale.X;
-                EntityManager.SetComponentData(boneEntity, LocalTransform.FromPositionRotationScale(
-                    Conversions.ToUnity(pose.Position), Conversions.ToUnity(pose.Rotation), uniform));
-                if (EntityManager.HasComponent<PostTransformMatrix>(boneEntity))
-                    EntityManager.SetComponentData(boneEntity, new PostTransformMatrix
+                    if (clips[clipFor[i]].Value.Value.Family != family)
                     {
-                        Value = float4x4.Scale(uniform != 0f ? Conversions.ToUnity(pose.Scale) / uniform : 1f)
-                    });
-            }
-            EntityManager.SetComponentData(entity, clock);
-        }
-
-        static double WrapSample(double sample, double duration, bool loop)
-        {
-            if (!(duration > 0.0))
-                return 0.0;
-            if (loop)
-            {
-                sample %= duration;
-                if (sample < 0.0)
-                    sample += duration;
-                return sample;
-            }
-            if (sample < 0.0)
-                return 0.0;
-            return sample > duration ? duration : sample;
-        }
-
-        static void SortByLayer(Span<ClipContribution> contributions, Span<int> clipFor)
-        {
-            for (var i = 1; i < contributions.Length; i++)
-            {
-                var contribution = contributions[i];
-                var clip = clipFor[i];
-                var j = i - 1;
-                while (j >= 0 && contributions[j].Layer > contribution.Layer)
-                {
-                    contributions[j + 1] = contributions[j];
-                    clipFor[j + 1] = clipFor[j];
-                    j--;
+                        Fault(entity, FamilyFault, 0, 0);
+                        clockData = clock;
+                        return;
+                    }
                 }
-                contributions[j + 1] = contribution;
-                clipFor[j + 1] = clip;
+                var reference = FamilyReference.AsReadOnlySpan();
+                var canonical = CanonicalParents.AsReadOnlySpan();
+                var decoded = new NativeArray<Pose>(active * CanonicalBones, Allocator.Temp);
+                for (var i = 0; i < active; i++)
+                {
+                    ref var layout = ref layouts[clipFor[i]].Value.Value;
+                    var error = SegmentSampling.Sample(layout.Duration, layout.SampleCount, layout.Loop != 0, ordered[i].SampleSeconds,
+                        View(ref layout.Tracks), View(ref layout.Segments), View(ref layout.Blocks), View(ref layout.Bytes),
+                        reference, decoded.AsSpan().Slice(i * CanonicalBones, CanonicalBones));
+                    if (error != AnimationError.None)
+                    {
+                        Fault(entity, SampleFault, (int)error, 0);
+                        clockData = clock;
+                        return;
+                    }
+                }
+                var blended = new NativeArray<Pose>(CanonicalBones, Allocator.Temp);
+                var blend = CanonicalBlend.Evaluate(ordered.Slice(0, active), layers.Slice(0, layerCount), decoded.AsSpan(),
+                    default(ReadOnlySpan<Pose>), default(ReadOnlySpan<float>), reference, blended.AsSpan());
+                if (blend != AnimationError.None)
+                {
+                    Fault(entity, BlendFault, (int)blend, 0);
+                    clockData = clock;
+                    return;
+                }
+                var retargeted = new NativeArray<Pose>(boneCount, Allocator.Temp);
+                var destination = retargeted.AsSpan();
+                var canonicalModel = new NativeArray<RigidPose>(CanonicalBones, Allocator.Temp);
+                var targetModel = new NativeArray<RigidPose>(boneCount, Allocator.Temp);
+                ref var tableLayout = ref table.Value.Value;
+                var binding = tableLayout.Binding;
+                if (family == binding.Target && boneCount == CanonicalBones)
+                {
+                    Span<int> rigParents = stackalloc int[CanonicalBones];
+                    for (var b = 0; b < boneCount; b++)
+                        rigParents[b] = rig.Bones[b].Parent;
+                    var identity = IdentityRetarget.Apply(family, binding.Target, rigParents, blended.AsSpan(), targetModel.AsSpan(), destination);
+                    if (identity != AnimationError.None)
+                    {
+                        Fault(entity, IdentityFault, (int)identity, 0);
+                        clockData = clock;
+                        return;
+                    }
+                }
+                else
+                {
+                    var rows = View(ref tableLayout.Rows);
+                    var remap = RetargetTable.Apply(family, binding, canonical, blended.AsSpan(), rows, canonicalModel.AsSpan(), targetModel.AsSpan(), destination);
+                    if (remap != AnimationError.None)
+                    {
+                        Fault(entity, RemapFault, (int)remap, 0);
+                        clockData = clock;
+                        return;
+                    }
+                    CanonicalTranslation.Apply(rows, binding, canonical, blended.AsSpan(), reference, canonicalModel.AsSpan(), targetModel.AsSpan(), destination);
+                }
+                var previous = previousContributions.Reinterpret<ClipContribution>().AsNativeArray().AsSpan();
+                if (!SameMembers(ordered.Slice(0, active), previous, state.Frame.ContributionCount))
+                    clock.Continuity++;
+                var frame = new AnimationFrame(clock.Tick, 0, clock.Continuity, clock.Seconds, advance, clock.Transition,
+                    seek ? FrameMode.Seek : FrameMode.Advance, 0.1f);
+                var boneScratch = new NativeArray<BoneFrameState>(boneCount, Allocator.Temp);
+                var poseScratch = new NativeArray<Pose>(boneCount, Allocator.Temp);
+                var zeroVelocity = new NativeArray<PoseVelocity>(boneCount, Allocator.Temp);
+                var smooth = TimelinePose.Evaluate(frame, ordered.Slice(0, active), layers.Slice(0, layerCount), true, destination,
+                    zeroVelocity.AsSpan(), ref state.Frame, boneStates.Reinterpret<BoneFrameState>().AsNativeArray().AsSpan(), boneScratch.AsSpan(),
+                    previous, previousLayers.Reinterpret<LayerInput>().AsNativeArray().AsSpan(),
+                    committed.Reinterpret<Pose>().AsNativeArray().AsSpan(), poseScratch.AsSpan(), out var action);
+                state.Active = active;
+                state.Action = action;
+                state.Smooth = smooth;
+                state.Stamp = Stamp;
+                state.Native = 1;
+                MarkManaged(ref state.Native);
+                if (smooth != AnimationError.None)
+                {
+                    Fault(entity, SmoothFault, (int)smooth, 0);
+                    clockData = clock;
+                    return;
+                }
+                var poses = committed.Reinterpret<Pose>().AsNativeArray();
+                for (var b = 0; b < boneCount; b++)
+                {
+                    var boneEntity = bones[b].Value;
+                    if (!Transforms.HasComponent(boneEntity))
+                        continue;
+                    var pose = poses[b];
+                    var uniform = pose.Scale.X;
+                    Transforms[boneEntity] = LocalTransform.FromPositionRotationScale(
+                        Conversions.ToUnity(pose.Position), Conversions.ToUnity(pose.Rotation), uniform);
+                    if (PostTransforms.HasComponent(boneEntity))
+                        PostTransforms[boneEntity] = new PostTransformMatrix
+                        {
+                            Value = float4x4.Scale(uniform != 0f ? Conversions.ToUnity(pose.Scale) / uniform : 1f)
+                        };
+                }
+                clockData = clock;
             }
-        }
 
-        static int BuildLayers(ReadOnlySpan<ClipContribution> contributions, Span<LayerInput> layers)
-        {
-            var count = 0;
-            var i = 0;
-            while (i < contributions.Length)
+            static double WrapSample(double sample, double duration, bool loop)
             {
-                var layer = contributions[i].Layer;
-                var first = i;
-                while (i < contributions.Length && contributions[i].Layer == layer)
-                    i++;
-                layers[count++] = new LayerInput(layer, SharedMode.Override, first, i - first, 1f);
+                if (!(duration > 0.0))
+                    return 0.0;
+                if (loop)
+                {
+                    sample %= duration;
+                    if (sample < 0.0)
+                        sample += duration;
+                    return sample;
+                }
+                if (sample < 0.0)
+                    return 0.0;
+                return sample > duration ? duration : sample;
             }
-            return count;
-        }
 
-        static bool SameMembers(ReadOnlySpan<ClipContribution> contributions, RigState state, int active)
-        {
-            if (state.Frame.ContributionCount != active)
-                return false;
-            for (var i = 0; i < active; i++)
+            static void SortByLayer(Span<ClipContribution> contributions, Span<int> clipFor)
             {
-                var previous = state.PreviousContributions[i];
-                if (previous.Clip.Slot != contributions[i].Clip.Slot || previous.Layer != contributions[i].Layer || previous.MaskIndex != contributions[i].MaskIndex)
-                    return false;
-                if (Math.Abs(previous.Weight - contributions[i].Weight) > 1e-6f)
-                    return false;
+                for (var i = 1; i < contributions.Length; i++)
+                {
+                    var contribution = contributions[i];
+                    var clip = clipFor[i];
+                    var j = i - 1;
+                    while (j >= 0 && contributions[j].Layer > contribution.Layer)
+                    {
+                        contributions[j + 1] = contributions[j];
+                        clipFor[j + 1] = clipFor[j];
+                        j--;
+                    }
+                    contributions[j + 1] = contribution;
+                    clipFor[j + 1] = clip;
+                }
             }
-            return true;
+
+            static int BuildLayers(ReadOnlySpan<ClipContribution> contributions, Span<LayerInput> layers)
+            {
+                var count = 0;
+                var i = 0;
+                while (i < contributions.Length)
+                {
+                    var layer = contributions[i].Layer;
+                    var first = i;
+                    while (i < contributions.Length && contributions[i].Layer == layer)
+                        i++;
+                    layers[count++] = new LayerInput(layer, SharedMode.Override, first, i - first, 1f);
+                }
+                return count;
+            }
+
+            static bool SameMembers(ReadOnlySpan<ClipContribution> contributions, ReadOnlySpan<ClipContribution> previous, int previousCount)
+            {
+                if (previousCount != contributions.Length)
+                    return false;
+                for (var i = 0; i < contributions.Length; i++)
+                {
+                    var before = previous[i];
+                    if (before.Clip.Slot != contributions[i].Clip.Slot || before.Layer != contributions[i].Layer || before.MaskIndex != contributions[i].MaskIndex)
+                        return false;
+                    if (math.abs(before.Weight - contributions[i].Weight) > 1e-6f)
+                        return false;
+                }
+                return true;
+            }
         }
     }
 
