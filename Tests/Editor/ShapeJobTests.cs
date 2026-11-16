@@ -25,7 +25,7 @@ namespace SA.Tests
         const string TraceName = "ShapeTrace.bytes";
         const string PaletteName = "ShapePalette.bytes";
 
-        sealed class Shaped : IDisposable
+        internal sealed class Shaped : IDisposable
         {
             public SharedFamilyJobTests.Stage Stage;
             public ShapeTimelineSystem Timeline;
@@ -188,6 +188,21 @@ namespace SA.Tests
 
         static Shaped Scene(bool skinned)
         {
+            var scene = Populate(skinned);
+            var stage = scene.Stage;
+            stage.System = stage.World.GetOrCreateSystemManaged<SharedFamilySystem>();
+            scene.Timeline = stage.World.GetOrCreateSystemManaged<ShapeTimelineSystem>();
+            if (skinned)
+            {
+                scene.Skinning = stage.World.GetOrCreateSystemManaged<SkinningSystem>();
+                scene.Palette = stage.World.GetOrCreateSystemManaged<SharedFamilyPaletteSystem>();
+                scene.ShapePalette = stage.World.GetOrCreateSystemManaged<ShapeSkinPaletteSystem>();
+            }
+            return scene;
+        }
+
+        internal static Shaped Populate(bool skinned)
+        {
             var scene = new Shaped { Stage = new SharedFamilyJobTests.Stage { World = new World("SA.ShapeJob") } };
             var stage = scene.Stage;
             var manager = stage.World.EntityManager;
@@ -213,14 +228,6 @@ namespace SA.Tests
                 Skin(scene, full, SkinBlob(scene, 2, Canonical, 50));
                 Skin(scene, full, SkinBlob(scene, 3, Canonical, 20));
                 Skin(scene, locked, SkinBlob(scene, 4, 7, 5));
-            }
-            stage.System = stage.World.GetOrCreateSystemManaged<SharedFamilySystem>();
-            scene.Timeline = stage.World.GetOrCreateSystemManaged<ShapeTimelineSystem>();
-            if (skinned)
-            {
-                scene.Skinning = stage.World.GetOrCreateSystemManaged<SkinningSystem>();
-                scene.Palette = stage.World.GetOrCreateSystemManaged<SharedFamilyPaletteSystem>();
-                scene.ShapePalette = stage.World.GetOrCreateSystemManaged<ShapeSkinPaletteSystem>();
             }
             return scene;
         }

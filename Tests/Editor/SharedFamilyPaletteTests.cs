@@ -19,7 +19,7 @@ namespace SA.Tests
         const int Steps = 14;
         const string TraceName = "SharedFamilyPalette.bytes";
 
-        sealed class Skinned : IDisposable
+        internal sealed class Skinned : IDisposable
         {
             public SharedFamilyJobTests.Stage Stage;
             public SkinningSystem Skinning;
@@ -82,6 +82,16 @@ namespace SA.Tests
 
         static Skinned Scene()
         {
+            var scene = Populate();
+            var stage = scene.Stage;
+            stage.System = stage.World.GetOrCreateSystemManaged<SharedFamilySystem>();
+            scene.Skinning = stage.World.GetOrCreateSystemManaged<SkinningSystem>();
+            scene.Palette = stage.World.GetOrCreateSystemManaged<SharedFamilyPaletteSystem>();
+            return scene;
+        }
+
+        internal static Skinned Populate()
+        {
             var scene = new Skinned { Stage = new SharedFamilyJobTests.Stage { World = new World("SA.SharedFamilyPalette") } };
             var stage = scene.Stage;
             var reference = SharedFamilyBake.CanonicalReferencePoses();
@@ -96,9 +106,6 @@ namespace SA.Tests
             Skin(scene, small, scene.Blobs[0]);
             Skin(scene, full, scene.Blobs[1]);
             Skin(scene, full, scene.Blobs[2]);
-            stage.System = stage.World.GetOrCreateSystemManaged<SharedFamilySystem>();
-            scene.Skinning = stage.World.GetOrCreateSystemManaged<SkinningSystem>();
-            scene.Palette = stage.World.GetOrCreateSystemManaged<SharedFamilyPaletteSystem>();
             return scene;
         }
 

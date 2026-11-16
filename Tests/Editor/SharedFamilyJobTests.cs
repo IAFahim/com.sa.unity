@@ -164,6 +164,13 @@ namespace SA.Tests
 
         static Stage Scene()
         {
+            var stage = Populate();
+            stage.System = stage.World.GetOrCreateSystemManaged<SharedFamilySystem>();
+            return stage;
+        }
+
+        internal static Stage Populate()
+        {
             var stage = new Stage { World = new World("SA.SharedFamilyJob") };
             var reference = SharedFamilyBake.CanonicalReferencePoses();
             var parents = SharedFamilyBake.CanonicalParentsArray();
@@ -174,7 +181,6 @@ namespace SA.Tests
             Rig(stage, SmallParents(), SmallTable(stage, reference), new[] { first, second }, new[] { 1f, 0f }, 0f);
             Rig(stage, parents, FullTable(stage, reference, parents), new[] { first, second }, new[] { 1f, 0f }, 0f);
             Rig(stage, SmallParents(), SmallTable(stage, reference), new[] { first, second, third }, new[] { 0.6f, 0.4f, 0f }, 0f);
-            stage.System = stage.World.GetOrCreateSystemManaged<SharedFamilySystem>();
             return stage;
         }
 
