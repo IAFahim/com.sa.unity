@@ -43,6 +43,15 @@ A second run of the same tests split the CPU column into its two systems (run-to
 
 So at 50,000 characters `SkinningSystem.OnUpdate` (register, layout, fill, upload and dispatch) is the CPU cost to attack, at about 0.2 microseconds per character per frame against 0.03 for playback, and the GPU compute is about as large again.
 
+A third run timed the phases inside `SkinningSystem.OnUpdate` with a stopwatch added for the measurement and removed again (ms per frame, mean of 200 frames):
+
+| Characters | Register | Layout (count jobs) | Fill (jobs and frame arrays) | Upload and dispatch | Dispose |
+|-----------:|---------:|--------------------:|-----------------------------:|--------------------:|--------:|
+| 10,000 | 0.02 | 0.43 | 0.79 | 0.25 | 0.01 |
+| 50,000 | 0.04 | 1.91 | 3.63 | 4.52 | 0.01 |
+
+Upload and dispatch grows 18 times for 5 times the characters, so the per-frame upload of every instance, motion and skin job is the first thing to cut. Layout and fill both walk every clip state of every rig, so they do that work twice per frame.
+
 Rendering cost is still not measured.
 
 Shared-family rigs on the CPU (2026-11-16)
