@@ -34,6 +34,15 @@ At 10,000 characters the GPU part is about 1.5 ms, so the 2 ms CPU and 2 ms GPU 
 
 On this GPU the CPU side is the larger cost at 50,000, and it grows faster than the character count (8.7 times the cost for 5 times the characters). That points at the per-frame instance fill and upload before the compute kernels, not at the one-thread-per-character kernel. The CPU here has 6 cores against the 24 of the machine above, so the CPU columns of the two tables are not comparable.
 
+A second run of the same tests split the CPU column into its two systems (run-to-run spread is visible in the totals):
+
+| Characters | PlaybackSystem | SkinningSystem | CPU total avg / p95 | CPU + GPU avg / p95 |
+|-----------:|---------------:|---------------:|--------------------:|--------------------:|
+| 10,000 | 0.31 ms | 1.58 ms | 1.89 / 2.04 ms | 3.34 / 3.54 ms |
+| 50,000 | 1.42 ms | 10.70 ms | 12.12 / 19.49 ms | 23.79 / 31.13 ms |
+
+So at 50,000 characters `SkinningSystem.OnUpdate` (register, layout, fill, upload and dispatch) is the CPU cost to attack, at about 0.2 microseconds per character per frame against 0.03 for playback, and the GPU compute is about as large again.
+
 Rendering cost is still not measured.
 
 Shared-family rigs on the CPU (2026-11-16)

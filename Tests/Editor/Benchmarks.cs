@@ -105,6 +105,7 @@ namespace SA.Tests
             var skinning = world.GetOrCreateSystemManaged<SkinningSystem>();
             var elapsed = 0.0;
             var cpuMs = new List<float>();
+            var playbackMs = new List<float>();
             var totalMs = new List<float>();
             var timer = new Stopwatch();
             for (var frame = 0; frame < 260; frame++)
@@ -114,6 +115,7 @@ namespace SA.Tests
                 timer.Restart();
                 playback.Update(world.Unmanaged);
                 manager.CompleteAllTrackedJobs();
+                var stepped = (float)timer.Elapsed.TotalMilliseconds;
                 skinning.Update();
                 var cpu = (float)timer.Elapsed.TotalMilliseconds;
                 var readback = new float4x4[1];
@@ -122,13 +124,14 @@ namespace SA.Tests
                 if (frame >= 60)
                 {
                     cpuMs.Add(cpu);
+                    playbackMs.Add(stepped);
                     totalMs.Add(total);
                 }
             }
             cpuMs.Sort();
             totalMs.Sort();
             float Average(List<float> v) { var s = 0f; foreach (var x in v) s += x; return s / v.Count; }
-            var json = $"{{\n  \"Characters\": {count},\n  \"Bones\": {Bones},\n  \"CpuSubmitMsAvg\": {Average(cpuMs):F3},\n  \"CpuSubmitMsP95\": {cpuMs[(int)(cpuMs.Count * 0.95f)]:F3},\n  \"CpuPlusGpuMsAvg\": {Average(totalMs):F3},\n  \"CpuPlusGpuMsP95\": {totalMs[(int)(totalMs.Count * 0.95f)]:F3},\n  \"Gpu\": \"{SystemInfo.graphicsDeviceName}\",\n  \"Api\": \"{SystemInfo.graphicsDeviceType}\",\n  \"Cpu\": \"{SystemInfo.processorType}\"\n}}";
+            var json = $"{{\n  \"Characters\": {count},\n  \"Bones\": {Bones},\n  \"CpuSubmitMsAvg\": {Average(cpuMs):F3},\n  \"PlaybackMsAvg\": {Average(playbackMs):F3},\n  \"SkinningMsAvg\": {Average(cpuMs) - Average(playbackMs):F3},\n  \"CpuSubmitMsP95\": {cpuMs[(int)(cpuMs.Count * 0.95f)]:F3},\n  \"CpuPlusGpuMsAvg\": {Average(totalMs):F3},\n  \"CpuPlusGpuMsP95\": {totalMs[(int)(totalMs.Count * 0.95f)]:F3},\n  \"Gpu\": \"{SystemInfo.graphicsDeviceName}\",\n  \"Api\": \"{SystemInfo.graphicsDeviceType}\",\n  \"Cpu\": \"{SystemInfo.processorType}\"\n}}";
             Directory.CreateDirectory("Temp/sa");
             File.WriteAllText($"Temp/sa/micro_{count}.json", json);
             NUnit.Framework.TestContext.WriteLine(json);
