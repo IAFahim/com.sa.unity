@@ -46,4 +46,13 @@ Shared-family rigs on the CPU (2026-11-16)
 | 0.3.7, main thread | 22.50 | 22.5 |
 | Burst job (`packet/C17-shared-family-job`) | 2.82 | 2.8 |
 
-This times `SharedFamilySystem` alone. `SharedFamilyPaletteSystem` still builds each skin palette on the main thread and is not included.
+This times `SharedFamilySystem` alone.
+
+`SharedFamilyPaletteTests.CostOfTheSharedFamilyPaletteSystemPerSkin`, 1000 skins of 56 bones, one per rig, median of 60 frames after 20 warm-up frames, timing `SharedFamilyPaletteSystem` alone:
+
+| System | ms per frame | microseconds per skin |
+|---|---:|---:|
+| 0.3.7, main thread, one `SetData` per skin | 15.63 | 15.6 |
+| Burst job, one `SetData` per run of neighbouring skins (`packet/C18-shared-palette-job`) | 2.68 | 2.7 |
+
+Together the two systems cost 38.1 ms per frame for 1000 shared-family characters before and 5.5 ms after.

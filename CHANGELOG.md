@@ -6,7 +6,8 @@ Unreleased
 - Per-rig timeline state moved from a managed dictionary into components the system adds on a rig's first update. Clip and retarget-table bytes are parsed once into blobs when a rig's clip list or table changes, not every frame.
 - `LastActive`, `LastAction` and `LastSmooth` complete the job when they are read. A clip that cannot be loaded now warns when the rig's clip list is first resolved, not when the clip is first played.
 - Needs the `com.sa.motion.unity` bridge built from sa-motion `packet/C17-segment-sampling` (`SegmentSampling`, `SharedClipStorage`, and a packed-track reader Burst can compile).
-- `ShapeTimelineSystem` and the skin palette upload are unchanged and still run on the main thread.
+- `SharedFamilyPaletteSystem` builds every skin palette in a Burst job and uploads neighbouring skins with one `SetData` call instead of one call per skin. Same machine, 1000 skins of 56 bones: 15.63 ms per frame before, 2.68 ms after. `SharedFamilyPaletteTests` reads the matrices back from the GPU buffer: all 17,248 recorded values match the 0.3.7 system bit for bit. A skin that has no place in the matrix buffer (`MatrixBase` 0) is now skipped; before, its palette was written over the start of the buffer.
+- `ShapeTimelineSystem` and `ShapeSkinPaletteSystem` are unchanged and still run on the main thread.
 
 0.3.7
 -----

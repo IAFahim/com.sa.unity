@@ -640,36 +640,27 @@ namespace SA
     {
         const int MaxBones = 512;
 
-        EntityQuery skinQuery;
-        NativeArray<RigidPose> model;
-        NativeArray<Affine> affineModel;
-        NativeArray<Affine> bindMatrices;
-        NativeArray<Affine> palette;
-        NativeArray<float4x4> upload;
-        NativeArray<Pose> localPose;
-        NativeArray<int> parents;
+        NativeArray<float4x4> staging;
+        NativeList<int2> ranges;
+        EntityQuery skins;
+
+        struct RangeOrder : IComparer<int2>
+        {
+            public int Compare(int2 a, int2 b) => a.x.CompareTo(b.x);
+        }
 
         protected override void OnCreate()
         {
-            skinQuery = GetEntityQuery(ComponentType.ReadOnly<Skin>(), ComponentType.ReadOnly<SkinBinding>());
-            model = new NativeArray<RigidPose>(MaxBones, Allocator.Persistent);
-            affineModel = new NativeArray<Affine>(MaxBones, Allocator.Persistent);
-            bindMatrices = new NativeArray<Affine>(MaxBones, Allocator.Persistent);
-            palette = new NativeArray<Affine>(MaxBones, Allocator.Persistent);
-            upload = new NativeArray<float4x4>(MaxBones, Allocator.Persistent);
-            localPose = new NativeArray<Pose>(MaxBones, Allocator.Persistent);
-            parents = new NativeArray<int>(MaxBones, Allocator.Persistent);
+            skins = GetEntityQuery(ComponentType.ReadOnly<Skin>(), ComponentType.ReadOnly<SkinBinding>());
+            ranges = new NativeList<int2>(64, Allocator.Persistent);
         }
 
         protected override void OnDestroy()
         {
-            model.Dispose();
-            affineModel.Dispose();
-            bindMatrices.Dispose();
-            palette.Dispose();
-            upload.Dispose();
-            localPose.Dispose();
-            parents.Dispose();
+            CompleteDependency();
+            if (staging.IsCreated)
+                staging.Dispose();
+            ranges.Dispose();
         }
 
         protected override void OnUpdate()
@@ -680,81 +671,137 @@ namespace SA
             var matrices = skinning.SkinMatrixBuffer;
             if (matrices == null)
                 return;
-            var skins = skinQuery.ToEntityArray(Allocator.Temp);
-            foreach (var skinEntity in skins)
+            if (!staging.IsCreated || staging.Length < matrices.count)
             {
-                if (!RouteSkin(skinEntity, matrices))
-                    continue;
+                if (staging.IsCreated)
+                    staging.Dispose();
+                staging = new NativeArray<float4x4>(matrices.count, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
             }
-            skins.Dispose();
-        }
-
-        unsafe bool RouteSkin(Entity skinEntity, UnityEngine.GraphicsBuffer matrices)
-        {
-            var skin = EntityManager.GetComponentData<Skin>(skinEntity);
-            if (!skin.Value.IsCreated || !EntityManager.HasComponent<SharedTimeline>(skin.Rig))
-                return true;
-            if (EntityManager.HasComponent<ShapeDriven>(skin.Rig))
-                return true;
-            if (!EntityManager.HasBuffer<BoneEntity>(skin.Rig))
-                return true;
-            ref var blob = ref skin.Value.Value;
-            var boneCount = blob.Bones.Length;
-            if (boneCount <= 0 || boneCount > MaxBones)
-                return true;
-            var rigBones = EntityManager.GetBuffer<BoneEntity>(skin.Rig);
-            if (rigBones.Length <= 0 || rigBones.Length > MaxBones)
-                return true;
-            var rigReference = EntityManager.GetComponentData<Rig>(skin.Rig);
-            if (!rigReference.Value.IsCreated || rigReference.Value.Value.Bones.Length != rigBones.Length)
-                return true;
-            for (var b = 0; b < rigBones.Length; b++)
+            ranges.Clear();
+            var count = skins.CalculateEntityCount();
+            if (count == 0)
+                return;
+            if (ranges.Capacity < count)
+                ranges.Capacity = count;
+            Dependency = new PaletteJob
             {
-                if (!EntityManager.HasComponent<LocalTransform>(rigBones[b].Value))
-                    return true;
-                var transform = EntityManager.GetComponentData<LocalTransform>(rigBones[b].Value);
-                localPose[b] = new Pose
+                Timelines = SystemAPI.GetComponentLookup<SharedTimeline>(true),
+                Shaped = SystemAPI.GetComponentLookup<ShapeDriven>(true),
+                Rigs = SystemAPI.GetComponentLookup<Rig>(true),
+                Bones = SystemAPI.GetBufferLookup<BoneEntity>(true),
+                Transforms = SystemAPI.GetComponentLookup<LocalTransform>(true),
+                Staging = staging,
+                Limit = matrices.count,
+                Ranges = ranges.AsParallelWriter()
+            }.ScheduleParallel(skins, Dependency);
+            CompleteDependency();
+            if (ranges.Length == 0)
+                return;
+            ranges.Sort(new RangeOrder());
+            var start = ranges[0].x;
+            var end = start + ranges[0].y;
+            for (var i = 1; i < ranges.Length; i++)
+            {
+                var range = ranges[i];
+                if (range.x == end)
                 {
-                    Position = Conversions.ToMotion(transform.Position),
-                    Rotation = Conversions.ToMotion(transform.Rotation),
-                    Scale = new Float3(transform.Scale, transform.Scale, transform.Scale)
-                };
-                parents[b] = rigReference.Value.Value.Bones[b].Parent;
+                    end += range.y;
+                    continue;
+                }
+                matrices.SetData(staging, start, start, end - start);
+                start = range.x;
+                end = start + range.y;
             }
-            if (RigidMath.Model(parents.GetSubArray(0, rigBones.Length).AsSpan(), localPose.GetSubArray(0, rigBones.Length).AsSpan(), model.GetSubArray(0, rigBones.Length).AsSpan()) != AnimationError.None)
-                return false;
-            for (var b = 0; b < rigBones.Length; b++)
-                affineModel[b] = ToAffine(model[b]);
-            for (var b = 0; b < boneCount; b++)
-                bindMatrices[b] = ToAffine(blob.Bindposes[b]);
-            var paletteToRig = new ReadOnlySpan<int>(blob.Bones.GetUnsafePtr(), boneCount);
-            var build = SkinPalette.Build(affineModel.GetSubArray(0, rigBones.Length).AsSpan(), paletteToRig,
-                bindMatrices.GetSubArray(0, boneCount).AsSpan(), ToAffine(blob.MeshFromRig), palette.GetSubArray(0, boneCount).AsSpan());
-            if (build != AnimationError.None)
-                return false;
-            for (var b = 0; b < boneCount; b++)
+            matrices.SetData(staging, start, start, end - start);
+        }
+
+        [BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.High)]
+        unsafe partial struct PaletteJob : IJobEntity
+        {
+            [ReadOnly] public ComponentLookup<SharedTimeline> Timelines;
+            [ReadOnly] public ComponentLookup<ShapeDriven> Shaped;
+            [ReadOnly] public ComponentLookup<Rig> Rigs;
+            [ReadOnly] public BufferLookup<BoneEntity> Bones;
+            [ReadOnly] public ComponentLookup<LocalTransform> Transforms;
+            [NativeDisableParallelForRestriction] public NativeArray<float4x4> Staging;
+            public int Limit;
+            public NativeList<int2>.ParallelWriter Ranges;
+
+            void Execute(in Skin skin, in SkinBinding binding)
             {
-                var joint = palette[b];
-                upload[b] = new float4x4(new float4(Conversions.ToUnity(joint.C0), 0f), new float4(Conversions.ToUnity(joint.C1), 0f), new float4(Conversions.ToUnity(joint.C2), 0f), new float4(Conversions.ToUnity(joint.C3), 1f));
+                if (!skin.Value.IsCreated || !Timelines.HasComponent(skin.Rig))
+                    return;
+                if (Shaped.HasComponent(skin.Rig))
+                    return;
+                if (!Bones.HasBuffer(skin.Rig) || !Rigs.HasComponent(skin.Rig))
+                    return;
+                ref var blob = ref skin.Value.Value;
+                var boneCount = blob.Bones.Length;
+                if (boneCount <= 0 || boneCount > MaxBones)
+                    return;
+                var rigBones = Bones[skin.Rig];
+                var rigCount = rigBones.Length;
+                if (rigCount <= 0 || rigCount > MaxBones)
+                    return;
+                var rigReference = Rigs[skin.Rig];
+                if (!rigReference.Value.IsCreated || rigReference.Value.Value.Bones.Length != rigCount)
+                    return;
+                var start = (int)binding.MatrixBase;
+                if (start <= 0 || start > Limit - boneCount)
+                    return;
+                ref var rig = ref rigReference.Value.Value;
+                var localPose = new NativeArray<Pose>(rigCount, Allocator.Temp);
+                var parents = new NativeArray<int>(rigCount, Allocator.Temp);
+                for (var b = 0; b < rigCount; b++)
+                {
+                    if (!Transforms.TryGetComponent(rigBones[b].Value, out var transform))
+                        return;
+                    localPose[b] = new Pose
+                    {
+                        Position = Conversions.ToMotion(transform.Position),
+                        Rotation = Conversions.ToMotion(transform.Rotation),
+                        Scale = new Float3(transform.Scale, transform.Scale, transform.Scale)
+                    };
+                    parents[b] = rig.Bones[b].Parent;
+                }
+                var model = new NativeArray<RigidPose>(rigCount, Allocator.Temp);
+                if (RigidMath.Model(parents.AsReadOnlySpan(), localPose.AsReadOnlySpan(), model.AsSpan()) != AnimationError.None)
+                    return;
+                var affineModel = new NativeArray<Affine>(rigCount, Allocator.Temp);
+                for (var b = 0; b < rigCount; b++)
+                    affineModel[b] = ToAffine(model[b]);
+                var bindMatrices = new NativeArray<Affine>(boneCount, Allocator.Temp);
+                for (var b = 0; b < boneCount; b++)
+                    bindMatrices[b] = ToAffine(blob.Bindposes[b]);
+                var palette = new NativeArray<Affine>(boneCount, Allocator.Temp);
+                var paletteToRig = new ReadOnlySpan<int>(blob.Bones.GetUnsafePtr(), boneCount);
+                var build = SkinPalette.Build(affineModel.AsReadOnlySpan(), paletteToRig, bindMatrices.AsReadOnlySpan(), ToAffine(blob.MeshFromRig), palette.AsSpan());
+                if (build != AnimationError.None)
+                    return;
+                for (var b = 0; b < boneCount; b++)
+                {
+                    var joint = palette[b];
+                    Staging[start + b] = new float4x4(
+                        new float4(Conversions.ToUnity(joint.C0), 0f), new float4(Conversions.ToUnity(joint.C1), 0f),
+                        new float4(Conversions.ToUnity(joint.C2), 0f), new float4(Conversions.ToUnity(joint.C3), 1f));
+                }
+                Ranges.AddNoResize(new int2(start, boneCount));
             }
-            var binding = EntityManager.GetComponentData<SkinBinding>(skinEntity);
-            matrices.SetData(upload, 0, (int)binding.MatrixBase, boneCount);
-            return true;
-        }
 
-        static Affine ToAffine(in RigidPose pose)
-        {
-            var x = Quaternion.Rotate(pose.Rotation, new Float3(1f, 0f, 0f));
-            var y = Quaternion.Rotate(pose.Rotation, new Float3(0f, 1f, 0f));
-            var z = Quaternion.Rotate(pose.Rotation, new Float3(0f, 0f, 1f));
-            return new Affine(x, y, z, pose.Position);
-        }
+            static Affine ToAffine(in RigidPose pose)
+            {
+                var x = Quaternion.Rotate(pose.Rotation, new Float3(1f, 0f, 0f));
+                var y = Quaternion.Rotate(pose.Rotation, new Float3(0f, 1f, 0f));
+                var z = Quaternion.Rotate(pose.Rotation, new Float3(0f, 0f, 1f));
+                return new Affine(x, y, z, pose.Position);
+            }
 
-        static Affine ToAffine(in float3x4 matrix)
-        {
-            return new Affine(
-                Conversions.ToMotion(matrix.c0), Conversions.ToMotion(matrix.c1),
-                Conversions.ToMotion(matrix.c2), Conversions.ToMotion(matrix.c3));
+            static Affine ToAffine(in float3x4 matrix)
+            {
+                return new Affine(
+                    Conversions.ToMotion(matrix.c0), Conversions.ToMotion(matrix.c1),
+                    Conversions.ToMotion(matrix.c2), Conversions.ToMotion(matrix.c3));
+            }
         }
     }
 }
