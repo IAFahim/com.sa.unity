@@ -522,6 +522,69 @@ namespace SA.Tests
         }
 
         [Test]
+        public void TheShapeJobRunsAsBurstCode()
+        {
+            using (var scene = Scene(false))
+            {
+                scene.Step(0f);
+                scene.Step(1f / 60f);
+                foreach (var rig in scene.Stage.Rigs)
+                    Assert.AreEqual(1, scene.Stage.World.EntityManager.GetComponentData<ShapePoseState>(rig).Native, "the shape job fell back to managed code");
+            }
+        }
+
+        [Test]
+        public void TheShapePaletteStagingHoldsOnlyShapedSkins()
+        {
+            TestRigs.RequireGpu();
+            using (var scene = Scene(true))
+            {
+                scene.Frame(0f);
+                scene.Frame(1f / 60f);
+                const int shaped = 7 + 50 + 20 + 5;
+                Assert.AreEqual(shaped, scene.ShapePalette.StagedMatrices);
+                Assert.LessOrEqual(scene.ShapePalette.StagingCapacity, 2 * shaped);
+                Assert.That(scene.ShapePalette.UploadCalls, Is.InRange(1, 4));
+                Assert.AreEqual(0, scene.Palette.StagedMatrices, "the shared palette system staged a shaped skin");
+            }
+        }
+
+        [Test]
+        public void ARigThatStopsBeingShapedDropsItsShapeState()
+        {
+            using (var scene = Scene(false))
+            {
+                var manager = scene.Stage.World.EntityManager;
+                var rig = scene.Stage.Rigs[0];
+                for (var step = 0; step < 4; step++)
+                    scene.Step(step == 0 ? 0f : 1f / 60f);
+                Assert.IsTrue(manager.HasComponent<ShapePoseState>(rig));
+                Assert.AreEqual(3, ShapeTimelineSystem.TrackedRigCount);
+                manager.RemoveComponent<ShapeDriven>(rig);
+                scene.Step(1f / 60f);
+                Assert.IsFalse(manager.HasComponent<ShapePoseState>(rig), "shape state stayed on a rig that is no longer shaped");
+                Assert.AreEqual(2, ShapeTimelineSystem.TrackedRigCount);
+                var before = manager.GetComponentData<LocalTransform>(manager.GetBuffer<BoneEntity>(rig)[2].Value).Rotation;
+                scene.Step(1f / 60f);
+                scene.Step(1f / 60f);
+                var after = manager.GetComponentData<LocalTransform>(manager.GetBuffer<BoneEntity>(rig)[2].Value).Rotation;
+                Assert.Greater(math.length(after.value - before.value), 1e-5f, "the unshaped rig stopped animating");
+            }
+        }
+
+        [Test]
+        public void AShapeRigWithTheWrongChannelCountSaysSo()
+        {
+            using (var scene = Scene(false))
+            {
+                var manager = scene.Stage.World.EntityManager;
+                manager.GetBuffer<ShapeChannelState>(scene.Stage.Rigs[0]).Add(new ShapeChannelState { Id = 99u });
+                scene.Step(0f);
+                Assert.AreEqual("SA: shape rig has 2 channel states for 1 definition channels.", ShapeTimelineSystem.LastWarning);
+            }
+        }
+
+        [Test]
         [Explicit("Prints the cost of ShapeTimelineSystem and ShapeSkinPaletteSystem for 300 shaped rigs of 56 bones")]
         public void CostOfTheShapeSystemsPerRig()
         {

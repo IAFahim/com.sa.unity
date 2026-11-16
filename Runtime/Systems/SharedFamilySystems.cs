@@ -154,6 +154,7 @@ namespace SA
         protected override void OnDestroy()
         {
             CompleteDependency();
+            EntityManager.CompleteAllTrackedJobs();
             if (ReferenceEquals(latest, this))
                 latest = null;
             familyReference.Dispose();
@@ -218,10 +219,15 @@ namespace SA
             entities.Dispose();
         }
 
-        void Warn(int kind, long subject, string message)
+        void Warn(int kind, long subject, string message, Action<string> sink = null)
         {
             if (!warned.Add(((long)kind << 40) ^ subject))
                 return;
+            if (sink != null)
+            {
+                sink(message);
+                return;
+            }
             LastWarning = message;
             UnityEngine.Debug.LogWarning(message);
         }
@@ -244,33 +250,38 @@ namespace SA
             }
         }
 
-        unsafe void Resolve()
+        void Resolve()
         {
             if (changed.IsEmpty)
                 return;
             var entities = changed.ToEntityArray(Allocator.Temp);
+            ResolveLayouts(entities, "timeline", null);
+            entities.Dispose();
+        }
+
+        internal unsafe void ResolveLayouts(NativeArray<Entity> entities, string subject, Action<string> sink)
+        {
             foreach (var entity in entities)
             {
                 var retarget = EntityManager.GetComponentData<SharedRetarget>(entity).Value;
                 EntityManager.SetComponentData(entity, new SharedTableRef
                 {
-                    Value = TableLayout(entity, retarget),
+                    Value = TableLayout(entity, retarget, subject, sink),
                     Source = retarget.IsCreated ? (long)retarget.GetUnsafePtr() : 0
                 });
                 var clips = EntityManager.GetBuffer<SharedClipAsset>(entity, true);
                 var layouts = EntityManager.GetBuffer<SharedClipLayoutRef>(entity);
                 layouts.ResizeUninitialized(clips.Length);
                 for (var i = 0; i < clips.Length; i++)
-                    layouts[i] = new SharedClipLayoutRef { Value = ClipLayout(clips[i].Value) };
+                    layouts[i] = new SharedClipLayoutRef { Value = ClipLayout(clips[i].Value, subject, sink) };
             }
-            entities.Dispose();
         }
 
-        unsafe BlobAssetReference<SharedTableLayout> TableLayout(Entity entity, BlobAssetReference<SharedRetargetData> retarget)
+        unsafe BlobAssetReference<SharedTableLayout> TableLayout(Entity entity, BlobAssetReference<SharedRetargetData> retarget, string subject, Action<string> sink)
         {
             if (!retarget.IsCreated)
             {
-                Warn(TableMissingFault, entity.Index, "SA: timeline rig is missing its retarget table.");
+                Warn(TableMissingFault, entity.Index, "SA: " + subject + " rig is missing its retarget table.", sink);
                 return default;
             }
             ref var data = ref retarget.Value;
@@ -281,7 +292,7 @@ namespace SA
             if (tableLayouts.TryGetValue(key, out var layout))
             {
                 if (!layout.IsCreated)
-                    Warn(TableLoadFault, entity.Index, "SA: timeline rig table failed to load (" + tableErrors[key] + ").");
+                    Warn(TableLoadFault, entity.Index, "SA: " + subject + " rig table failed to load (" + tableErrors[key] + ").", sink);
                 return layout;
             }
             var error = RetargetFile.Load(new ReadOnlySpan<byte>(data.Table.GetUnsafePtr(), data.Table.Length), family, target,
@@ -290,7 +301,7 @@ namespace SA
             {
                 tableLayouts.Add(key, default);
                 tableErrors.Add(key, error);
-                Warn(TableLoadFault, entity.Index, "SA: timeline rig table failed to load (" + error + ").");
+                Warn(TableLoadFault, entity.Index, "SA: " + subject + " rig table failed to load (" + error + ").", sink);
                 return default;
             }
             var builder = new BlobBuilder(Allocator.Temp);
@@ -305,7 +316,7 @@ namespace SA
             return layout;
         }
 
-        unsafe BlobAssetReference<SharedClipLayout> ClipLayout(BlobAssetReference<SharedClipData> clip)
+        unsafe BlobAssetReference<SharedClipLayout> ClipLayout(BlobAssetReference<SharedClipData> clip, string subject, Action<string> sink)
         {
             if (!clip.IsCreated)
                 return default;
@@ -323,7 +334,7 @@ namespace SA
             if (load != AnimationError.None)
             {
                 clipLayouts.Add(artifact, default);
-                Warn(ClipLoadFault, artifact.GetHashCode(), "SA: timeline clip failed to load (" + load + ").");
+                Warn(ClipLoadFault, artifact.GetHashCode(), "SA: " + subject + " clip failed to load (" + load + ").", sink);
                 return default;
             }
             var builder = new BlobBuilder(Allocator.Temp);
@@ -345,7 +356,7 @@ namespace SA
             {
                 builder.Dispose();
                 clipLayouts.Add(artifact, default);
-                Warn(ClipLoadFault, artifact.GetHashCode(), "SA: timeline clip failed to load (" + write + ").");
+                Warn(ClipLoadFault, artifact.GetHashCode(), "SA: " + subject + " clip failed to load (" + write + ").", sink);
                 return default;
             }
             layout = builder.CreateBlobAssetReference<SharedClipLayout>(Allocator.Persistent);
@@ -640,94 +651,80 @@ namespace SA
     {
         const int MaxBones = 512;
 
-        NativeArray<float4x4> staging;
-        NativeList<int2> ranges;
+        PaletteStaging staging;
         EntityQuery skins;
 
-        struct RangeOrder : IComparer<int2>
-        {
-            public int Compare(int2 a, int2 b) => a.x.CompareTo(b.x);
-        }
+        internal int StagedMatrices { get; private set; }
+
+        internal int StagingCapacity => staging != null && staging.Matrices.IsCreated ? staging.Matrices.Length : 0;
+
+        internal int UploadCalls { get; private set; }
 
         protected override void OnCreate()
         {
             skins = GetEntityQuery(ComponentType.ReadOnly<Skin>(), ComponentType.ReadOnly<SkinBinding>());
-            ranges = new NativeList<int2>(64, Allocator.Persistent);
+            staging = new PaletteStaging();
         }
 
         protected override void OnDestroy()
         {
             CompleteDependency();
-            if (staging.IsCreated)
-                staging.Dispose();
-            ranges.Dispose();
+            staging.Dispose();
         }
 
         protected override void OnUpdate()
         {
+            StagedMatrices = 0;
+            UploadCalls = 0;
             var skinning = World.GetExistingSystemManaged<SkinningSystem>();
             if (skinning == null)
                 return;
             var matrices = skinning.SkinMatrixBuffer;
             if (matrices == null)
                 return;
-            if (!staging.IsCreated || staging.Length < matrices.count)
-            {
-                if (staging.IsCreated)
-                    staging.Dispose();
-                staging = new NativeArray<float4x4>(matrices.count, Allocator.Persistent, NativeArrayOptions.UninitializedMemory);
-            }
-            ranges.Clear();
             var count = skins.CalculateEntityCount();
             if (count == 0)
                 return;
-            if (ranges.Capacity < count)
-                ranges.Capacity = count;
-            Dependency = new PaletteJob
+            staging.Begin(count);
+            var rigs = SystemAPI.GetComponentLookup<Rig>(true);
+            var bones = SystemAPI.GetBufferLookup<BoneEntity>(true);
+            Dependency = new MeasureJob
             {
                 Timelines = SystemAPI.GetComponentLookup<SharedTimeline>(true),
                 Shaped = SystemAPI.GetComponentLookup<ShapeDriven>(true),
-                Rigs = SystemAPI.GetComponentLookup<Rig>(true),
-                Bones = SystemAPI.GetBufferLookup<BoneEntity>(true),
-                Transforms = SystemAPI.GetComponentLookup<LocalTransform>(true),
-                Staging = staging,
+                Rigs = rigs,
+                Bones = bones,
                 Limit = matrices.count,
-                Ranges = ranges.AsParallelWriter()
+                Ranges = staging.Ranges.AsParallelWriter()
             }.ScheduleParallel(skins, Dependency);
             CompleteDependency();
-            if (ranges.Length == 0)
+            StagedMatrices = staging.Arrange();
+            if (StagedMatrices == 0)
                 return;
-            ranges.Sort(new RangeOrder());
-            var start = ranges[0].x;
-            var end = start + ranges[0].y;
-            for (var i = 1; i < ranges.Length; i++)
+            Dependency = new PaletteJob
             {
-                var range = ranges[i];
-                if (range.x == end)
-                {
-                    end += range.y;
-                    continue;
-                }
-                matrices.SetData(staging, start, start, end - start);
-                start = range.x;
-                end = start + range.y;
-            }
-            matrices.SetData(staging, start, start, end - start);
+                Rigs = rigs,
+                Bones = bones,
+                Transforms = SystemAPI.GetComponentLookup<LocalTransform>(true),
+                Offsets = staging.Offsets,
+                Built = staging.Built,
+                Staging = staging.Matrices
+            }.ScheduleParallel(skins, Dependency);
+            CompleteDependency();
+            UploadCalls = staging.Upload(matrices);
         }
 
         [BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.High)]
-        unsafe partial struct PaletteJob : IJobEntity
+        partial struct MeasureJob : IJobEntity
         {
             [ReadOnly] public ComponentLookup<SharedTimeline> Timelines;
             [ReadOnly] public ComponentLookup<ShapeDriven> Shaped;
             [ReadOnly] public ComponentLookup<Rig> Rigs;
             [ReadOnly] public BufferLookup<BoneEntity> Bones;
-            [ReadOnly] public ComponentLookup<LocalTransform> Transforms;
-            [NativeDisableParallelForRestriction] public NativeArray<float4x4> Staging;
             public int Limit;
-            public NativeList<int2>.ParallelWriter Ranges;
+            public NativeList<PaletteRange>.ParallelWriter Ranges;
 
-            void Execute(in Skin skin, in SkinBinding binding)
+            void Execute([EntityIndexInQuery] int index, in Skin skin, in SkinBinding binding)
             {
                 if (!skin.Value.IsCreated || !Timelines.HasComponent(skin.Rig))
                     return;
@@ -735,12 +732,10 @@ namespace SA
                     return;
                 if (!Bones.HasBuffer(skin.Rig) || !Rigs.HasComponent(skin.Rig))
                     return;
-                ref var blob = ref skin.Value.Value;
-                var boneCount = blob.Bones.Length;
+                var boneCount = skin.Value.Value.Bones.Length;
                 if (boneCount <= 0 || boneCount > MaxBones)
                     return;
-                var rigBones = Bones[skin.Rig];
-                var rigCount = rigBones.Length;
+                var rigCount = Bones[skin.Rig].Length;
                 if (rigCount <= 0 || rigCount > MaxBones)
                     return;
                 var rigReference = Rigs[skin.Rig];
@@ -749,6 +744,30 @@ namespace SA
                 var start = (int)binding.MatrixBase;
                 if (start <= 0 || start > Limit - boneCount)
                     return;
+                Ranges.AddNoResize(new PaletteRange { Start = start, Count = boneCount, Index = index });
+            }
+        }
+
+        [BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.High)]
+        unsafe partial struct PaletteJob : IJobEntity
+        {
+            [ReadOnly] public ComponentLookup<Rig> Rigs;
+            [ReadOnly] public BufferLookup<BoneEntity> Bones;
+            [ReadOnly] public ComponentLookup<LocalTransform> Transforms;
+            [ReadOnly] public NativeArray<int> Offsets;
+            [NativeDisableParallelForRestriction] public NativeArray<byte> Built;
+            [NativeDisableParallelForRestriction] public NativeArray<float4x4> Staging;
+
+            void Execute([EntityIndexInQuery] int index, in Skin skin)
+            {
+                var offset = Offsets[index];
+                if (offset < 0)
+                    return;
+                ref var blob = ref skin.Value.Value;
+                var boneCount = blob.Bones.Length;
+                var rigBones = Bones[skin.Rig];
+                var rigCount = rigBones.Length;
+                var rigReference = Rigs[skin.Rig];
                 ref var rig = ref rigReference.Value.Value;
                 var localPose = new NativeArray<Pose>(rigCount, Allocator.Temp);
                 var parents = new NativeArray<int>(rigCount, Allocator.Temp);
@@ -781,11 +800,11 @@ namespace SA
                 for (var b = 0; b < boneCount; b++)
                 {
                     var joint = palette[b];
-                    Staging[start + b] = new float4x4(
+                    Staging[offset + b] = new float4x4(
                         new float4(Conversions.ToUnity(joint.C0), 0f), new float4(Conversions.ToUnity(joint.C1), 0f),
                         new float4(Conversions.ToUnity(joint.C2), 0f), new float4(Conversions.ToUnity(joint.C3), 1f));
                 }
-                Ranges.AddNoResize(new int2(start, boneCount));
+                Built[index] = 1;
             }
 
             static Affine ToAffine(in RigidPose pose)

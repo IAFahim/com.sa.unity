@@ -74,3 +74,17 @@ This times `SharedFamilySystem` alone.
 | Burst job, one `SetData` per run of neighbouring skins (`packet/C18-shared-palette-job`) | 2.68 | 2.7 |
 
 Together the two systems cost 38.1 ms per frame for 1000 shared-family characters before and 5.5 ms after.
+
+Shaped rigs on the CPU (2026-11-16)
+===================================
+
+`ShapeJobTests.CostOfTheShapeSystemsPerRig`, 300 shaped rigs of 56 bones with one skin each, a two-channel shape with morphs, a new shape request on every rig every 10 frames, median of 60 frames after 20 warm-up frames, same machine, 11 worker threads. Four Editor runs each; a run started right after a recompile is left out because Burst is still compiling in the background and the numbers come out about twice as high.
+
+| System | 0.3.7, main thread | Burst job (`packet/C19-shape-jobs`) |
+|---|---:|---:|
+| `ShapeTimelineSystem` | 16.5, 17.3, 21.4, 22.1 ms | 1.67, 1.78, 1.81, 2.07 ms |
+| `ShapeSkinPaletteSystem` | 4.76, 6.45, 6.52, 6.97 ms | 1.18, 1.56, 1.60, 1.70 ms |
+
+So 300 shaped characters cost about 25 ms per frame before and about 3.4 ms after.
+
+The palette systems now stage only the palettes they upload. `SharedFamilyPaletteSystem` for 1000 skins of 56 bones measured 2.25, 2.81, 2.84, 2.95 and 3.07 ms per frame with the compact staging, and 2.68, 2.75 and 3.13 ms with the first job version that mirrored the whole GPU buffer, so the change is inside the run-to-run spread.

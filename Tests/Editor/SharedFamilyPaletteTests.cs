@@ -195,6 +195,22 @@ namespace SA.Tests
         }
 
         [Test]
+        public void TheStagingHoldsOnlyTheSharedPalettes()
+        {
+            TestRigs.RequireGpu();
+            using (var scene = Scene())
+            {
+                scene.Frame(0f);
+                scene.Frame(1f / 60f);
+                const int shared = 7 + 50 + 20;
+                Assert.AreEqual(shared, scene.Palette.StagedMatrices);
+                Assert.LessOrEqual(scene.Palette.StagingCapacity, 2 * shared);
+                Assert.Less(scene.Palette.StagingCapacity, scene.Skinning.SkinMatrixBuffer.count, "the staging copy is as large as the whole GPU buffer");
+                Assert.That(scene.Palette.UploadCalls, Is.InRange(1, 3));
+            }
+        }
+
+        [Test]
         [Explicit("Prints the cost of SharedFamilyPaletteSystem for 1000 skins of 56 bones")]
         public void CostOfTheSharedFamilyPaletteSystemPerSkin()
         {
