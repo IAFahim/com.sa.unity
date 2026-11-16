@@ -140,37 +140,19 @@ namespace SA.Tests
             return trace.ToArray();
         }
 
-        static string TracePath()
-        {
-            var package = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(SharedFamilyPaletteTests).Assembly);
-            Assert.IsNotNull(package, "the SA package could not be located");
-            return Path.Combine(package.resolvedPath, "Tests", "Editor", "Fixtures", TraceName);
-        }
-
         [Test]
-        [Explicit("Overwrites the palette fixture with what the system compiled now uploads. Run it only when the old behaviour is meant to change.")]
+        [Explicit(TraceFixtures.RecordReason)]
         public void RecordThePalettesFromTheCurrentSystem()
         {
             TestRigs.RequireGpu();
-            var trace = Play();
-            var bytes = new byte[trace.Length * 4];
-            Buffer.BlockCopy(trace, 0, bytes, 0, bytes.Length);
-            var path = TracePath();
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.WriteAllBytes(path, bytes);
-            TestContext.WriteLine("wrote " + trace.Length + " values to " + path);
-            Assert.Greater(trace.Length, 0);
+            TraceFixtures.Record(TraceName, Play());
         }
 
         [Test]
         public void TheUploadedPalettesMatchTheOnesRecordedFromTheMainThreadSystem()
         {
             TestRigs.RequireGpu();
-            var path = TracePath();
-            Assert.IsTrue(File.Exists(path), "missing fixture " + path);
-            var stored = File.ReadAllBytes(path);
-            var expected = new float[stored.Length / 4];
-            Buffer.BlockCopy(stored, 0, expected, 0, expected.Length * 4);
+            var expected = TraceFixtures.Load(TraceName);
             var actual = Play();
             Assert.AreEqual(expected.Length, actual.Length, "trace length");
             var worst = 0f;

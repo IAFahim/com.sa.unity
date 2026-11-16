@@ -271,40 +271,17 @@ namespace SA.Tests
             return trace.ToArray();
         }
 
-        static string TracePath()
-        {
-            var package = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(SharedFamilyJobTests).Assembly);
-            Assert.IsNotNull(package, "the SA package could not be located");
-            return Path.Combine(package.resolvedPath, "Tests", "Editor", "Fixtures", TraceName);
-        }
-
-        static float[] Floats(byte[] bytes)
-        {
-            var values = new float[bytes.Length / 4];
-            Buffer.BlockCopy(bytes, 0, values, 0, values.Length * 4);
-            return values;
-        }
-
         [Test]
-        [Explicit("Overwrites the trace fixture with what the system compiled now produces. Run it only when the old behaviour is meant to change.")]
+        [Explicit(TraceFixtures.RecordReason)]
         public void RecordTheTraceFromTheCurrentSystem()
         {
-            var trace = Play();
-            var bytes = new byte[trace.Length * 4];
-            Buffer.BlockCopy(trace, 0, bytes, 0, bytes.Length);
-            var path = TracePath();
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.WriteAllBytes(path, bytes);
-            TestContext.WriteLine("wrote " + trace.Length + " values to " + path);
-            Assert.Greater(trace.Length, 0);
+            TraceFixtures.Record(TraceName, Play());
         }
 
         [Test]
         public void TheSystemReproducesTheTraceRecordedFromTheMainThreadSystem()
         {
-            var path = TracePath();
-            Assert.IsTrue(File.Exists(path), "missing fixture " + path);
-            var expected = Floats(File.ReadAllBytes(path));
+            var expected = TraceFixtures.Load(TraceName);
             var actual = Play();
             Assert.AreEqual(expected.Length, actual.Length, "trace length");
             var worst = 0f;

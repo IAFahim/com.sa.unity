@@ -437,31 +437,9 @@ namespace SA.Tests
             return trace.ToArray();
         }
 
-        static string FixturePath(string name)
-        {
-            var package = UnityEditor.PackageManager.PackageInfo.FindForAssembly(typeof(ShapeJobTests).Assembly);
-            Assert.IsNotNull(package, "the SA package could not be located");
-            return Path.Combine(package.resolvedPath, "Tests", "Editor", "Fixtures", name);
-        }
-
-        static void Store(string name, float[] trace)
-        {
-            var bytes = new byte[trace.Length * 4];
-            Buffer.BlockCopy(trace, 0, bytes, 0, bytes.Length);
-            var path = FixturePath(name);
-            Directory.CreateDirectory(Path.GetDirectoryName(path));
-            File.WriteAllBytes(path, bytes);
-            TestContext.WriteLine("wrote " + trace.Length + " values to " + path);
-            Assert.Greater(trace.Length, 0);
-        }
-
         static void Compare(string label, string name, float[] actual, int steps)
         {
-            var path = FixturePath(name);
-            Assert.IsTrue(File.Exists(path), "missing fixture " + path);
-            var stored = File.ReadAllBytes(path);
-            var expected = new float[stored.Length / 4];
-            Buffer.BlockCopy(stored, 0, expected, 0, expected.Length * 4);
+            var expected = TraceFixtures.Load(name);
             Assert.AreEqual(expected.Length, actual.Length, "trace length");
             var worst = 0f;
             var worstIndex = -1;
@@ -490,20 +468,20 @@ namespace SA.Tests
         }
 
         [Test]
-        [Explicit("Overwrites the shape trace fixture with what the system compiled now produces. Run it only when the old behaviour is meant to change.")]
+        [Explicit(TraceFixtures.RecordReason)]
         public void RecordTheShapeTraceFromTheCurrentSystem()
         {
             var trace = Play(out var warning);
             TestContext.WriteLine("warnings: " + warning);
-            Store(TraceName, trace);
+            TraceFixtures.Record(TraceName, trace);
         }
 
         [Test]
-        [Explicit("Overwrites the shape palette fixture with what the system compiled now uploads. Run it only when the old behaviour is meant to change.")]
+        [Explicit(TraceFixtures.RecordReason)]
         public void RecordTheShapePalettesFromTheCurrentSystem()
         {
             TestRigs.RequireGpu();
-            Store(PaletteName, PlayPalettes());
+            TraceFixtures.Record(PaletteName, PlayPalettes());
         }
 
         [Test]
