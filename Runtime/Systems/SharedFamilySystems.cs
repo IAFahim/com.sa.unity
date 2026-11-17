@@ -116,12 +116,12 @@ namespace SA
         {
             rigs = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<SharedTimeline, Rig, SharedClipAsset, SharedContribution>()
-                .WithAll<SharedClock, SharedRetarget, BoneEntity>()
+                .WithAll<SharedClock, SharedRetarget>()
                 .WithNone<ShapeDriven>()
                 .Build(this);
             fresh = new EntityQueryBuilder(Allocator.Temp)
                 .WithAll<SharedTimeline, Rig, SharedClipAsset, SharedContribution>()
-                .WithAll<SharedClock, SharedRetarget, BoneEntity>()
+                .WithAll<SharedClock, SharedRetarget>()
                 .WithNone<ShapeDriven, SharedPoseState>()
                 .Build(this);
             changed = new EntityQueryBuilder(Allocator.Temp)
@@ -189,6 +189,7 @@ namespace SA
                 Stamp = stamp,
                 FamilyReference = familyReference,
                 CanonicalParents = canonicalParents,
+                Bones = SystemAPI.GetBufferLookup<BoneEntity>(true),
                 Transforms = SystemAPI.GetComponentLookup<LocalTransform>(),
                 PostTransforms = SystemAPI.GetComponentLookup<PostTransformMatrix>(),
                 Faults = faults.AsParallelWriter()
@@ -374,6 +375,7 @@ namespace SA
             public uint Stamp;
             [ReadOnly] public NativeArray<Pose> FamilyReference;
             [ReadOnly] public NativeArray<int> CanonicalParents;
+            [ReadOnly] public BufferLookup<BoneEntity> Bones;
             [NativeDisableParallelForRestriction] public ComponentLookup<LocalTransform> Transforms;
             [NativeDisableParallelForRestriction] public ComponentLookup<PostTransformMatrix> PostTransforms;
             public NativeQueue<SharedFault>.ParallelWriter Faults;
@@ -394,7 +396,7 @@ namespace SA
                 Faults.Enqueue(new SharedFault { Rig = rig, Kind = kind, First = first, Second = second });
 
             void Execute(Entity entity, in Rig rigReference, in SharedTableRef table, in DynamicBuffer<SharedClipAsset> clips,
-                in DynamicBuffer<SharedClipLayoutRef> layouts, ref DynamicBuffer<SharedContribution> contributions, in DynamicBuffer<BoneEntity> bones,
+                in DynamicBuffer<SharedClipLayoutRef> layouts, ref DynamicBuffer<SharedContribution> contributions,
                 ref SharedClock clockData, ref SharedPoseState state, ref DynamicBuffer<SharedBoneState> boneStates,
                 ref DynamicBuffer<SharedCommittedPose> committed, ref DynamicBuffer<SharedPreviousContribution> previousContributions,
                 ref DynamicBuffer<SharedPreviousLayer> previousLayers)
@@ -435,7 +437,8 @@ namespace SA
                     state.Table = table.Source;
                     state.Frame = default;
                 }
-                if (bones.Length < boneCount)
+                var hasBones = Bones.TryGetBuffer(entity, out var bones);
+                if (hasBones && bones.Length < boneCount)
                 {
                     Fault(entity, BoneEntityFault, bones.Length, boneCount);
                     return;
@@ -560,7 +563,7 @@ namespace SA
                     return;
                 }
                 var poses = committed.Reinterpret<Pose>().AsNativeArray();
-                for (var b = 0; b < boneCount; b++)
+                for (var b = 0; hasBones && b < boneCount; b++)
                 {
                     var boneEntity = bones[b].Value;
                     if (!Transforms.HasComponent(boneEntity))
@@ -705,6 +708,8 @@ namespace SA
             {
                 Rigs = rigs,
                 Bones = bones,
+                States = SystemAPI.GetComponentLookup<SharedPoseState>(true),
+                Poses = SystemAPI.GetBufferLookup<SharedCommittedPose>(true),
                 Transforms = SystemAPI.GetComponentLookup<LocalTransform>(true),
                 Offsets = staging.Offsets,
                 Built = staging.Built,
@@ -730,16 +735,18 @@ namespace SA
                     return;
                 if (Shaped.HasComponent(skin.Rig))
                     return;
-                if (!Bones.HasBuffer(skin.Rig) || !Rigs.HasComponent(skin.Rig))
+                if (!Rigs.HasComponent(skin.Rig))
                     return;
                 var boneCount = skin.Value.Value.Bones.Length;
                 if (boneCount <= 0 || boneCount > MaxBones)
                     return;
-                var rigCount = Bones[skin.Rig].Length;
+                var rigReference = Rigs[skin.Rig];
+                if (!rigReference.Value.IsCreated)
+                    return;
+                var rigCount = rigReference.Value.Value.Bones.Length;
                 if (rigCount <= 0 || rigCount > MaxBones)
                     return;
-                var rigReference = Rigs[skin.Rig];
-                if (!rigReference.Value.IsCreated || rigReference.Value.Value.Bones.Length != rigCount)
+                if (Bones.TryGetBuffer(skin.Rig, out var bones) && bones.Length != rigCount)
                     return;
                 var start = (int)binding.MatrixBase;
                 if (start <= 0 || start > Limit - boneCount)
@@ -753,6 +760,8 @@ namespace SA
         {
             [ReadOnly] public ComponentLookup<Rig> Rigs;
             [ReadOnly] public BufferLookup<BoneEntity> Bones;
+            [ReadOnly] public ComponentLookup<SharedPoseState> States;
+            [ReadOnly] public BufferLookup<SharedCommittedPose> Poses;
             [ReadOnly] public ComponentLookup<LocalTransform> Transforms;
             [ReadOnly] public NativeArray<int> Offsets;
             [NativeDisableParallelForRestriction] public NativeArray<byte> Built;
@@ -765,46 +774,95 @@ namespace SA
                     return;
                 ref var blob = ref skin.Value.Value;
                 var boneCount = blob.Bones.Length;
-                var rigBones = Bones[skin.Rig];
-                var rigCount = rigBones.Length;
                 var rigReference = Rigs[skin.Rig];
                 ref var rig = ref rigReference.Value.Value;
+                var rigCount = rig.Bones.Length;
                 var localPose = new NativeArray<Pose>(rigCount, Allocator.Temp);
                 var parents = new NativeArray<int>(rigCount, Allocator.Temp);
                 for (var b = 0; b < rigCount; b++)
-                {
-                    if (!Transforms.TryGetComponent(rigBones[b].Value, out var transform))
-                        return;
-                    localPose[b] = new Pose
-                    {
-                        Position = Conversions.ToMotion(transform.Position),
-                        Rotation = Conversions.ToMotion(transform.Rotation),
-                        Scale = new Float3(transform.Scale, transform.Scale, transform.Scale)
-                    };
                     parents[b] = rig.Bones[b].Parent;
+                var entities = Bones.TryGetBuffer(skin.Rig, out var rigBones);
+                if (entities)
+                {
+                    for (var b = 0; b < rigCount; b++)
+                    {
+                        if (!Transforms.TryGetComponent(rigBones[b].Value, out var transform))
+                            return;
+                        localPose[b] = new Pose
+                        {
+                            Position = Conversions.ToMotion(transform.Position),
+                            Rotation = Conversions.ToMotion(transform.Rotation),
+                            Scale = new Float3(transform.Scale, transform.Scale, transform.Scale)
+                        };
+                    }
                 }
+                else if (!Evaluated(skin.Rig, localPose))
+                    Rest(ref rig, localPose);
+                var palette = new NativeArray<Affine>(boneCount, Allocator.Temp);
+                var built = Build(ref blob, parents, localPose, palette);
+                if (!built && entities)
+                    return;
+                for (var b = 0; b < boneCount; b++)
+                {
+                    var joint = palette[b];
+                    Staging[offset + b] = built
+                        ? new float4x4(
+                            new float4(Conversions.ToUnity(joint.C0), 0f), new float4(Conversions.ToUnity(joint.C1), 0f),
+                            new float4(Conversions.ToUnity(joint.C2), 0f), new float4(Conversions.ToUnity(joint.C3), 1f))
+                        : GpuFrame.Identity;
+                }
+                Built[index] = 1;
+            }
+
+            bool Evaluated(Entity rig, NativeArray<Pose> local)
+            {
+                if (!States.TryGetComponent(rig, out var state) || state.Frame.Initialized == 0)
+                    return false;
+                if (!Poses.TryGetBuffer(rig, out var committed) || committed.Length != local.Length)
+                    return false;
+                for (var b = 0; b < local.Length; b++)
+                {
+                    var pose = committed[b].Value;
+                    local[b] = new Pose
+                    {
+                        Position = pose.Position,
+                        Rotation = pose.Rotation,
+                        Scale = new Float3(pose.Scale.X, pose.Scale.X, pose.Scale.X)
+                    };
+                }
+                return true;
+            }
+
+            static void Rest(ref RigBlob rig, NativeArray<Pose> local)
+            {
+                for (var b = 0; b < local.Length; b++)
+                {
+                    var rest = rig.Bones[b].Rest;
+                    local[b] = new Pose
+                    {
+                        Position = Conversions.ToMotion(rest.Position),
+                        Rotation = Conversions.ToMotion(rest.Rotation),
+                        Scale = new Float3(rest.Scale.x, rest.Scale.x, rest.Scale.x)
+                    };
+                }
+            }
+
+            static bool Build(ref SkinBlob blob, NativeArray<int> parents, NativeArray<Pose> localPose, NativeArray<Affine> palette)
+            {
+                var rigCount = parents.Length;
+                var boneCount = palette.Length;
                 var model = new NativeArray<RigidPose>(rigCount, Allocator.Temp);
                 if (RigidMath.Model(parents.AsReadOnlySpan(), localPose.AsReadOnlySpan(), model.AsSpan()) != AnimationError.None)
-                    return;
+                    return false;
                 var affineModel = new NativeArray<Affine>(rigCount, Allocator.Temp);
                 for (var b = 0; b < rigCount; b++)
                     affineModel[b] = ToAffine(model[b]);
                 var bindMatrices = new NativeArray<Affine>(boneCount, Allocator.Temp);
                 for (var b = 0; b < boneCount; b++)
                     bindMatrices[b] = ToAffine(blob.Bindposes[b]);
-                var palette = new NativeArray<Affine>(boneCount, Allocator.Temp);
                 var paletteToRig = new ReadOnlySpan<int>(blob.Bones.GetUnsafePtr(), boneCount);
-                var build = SkinPalette.Build(affineModel.AsReadOnlySpan(), paletteToRig, bindMatrices.AsReadOnlySpan(), ToAffine(blob.MeshFromRig), palette.AsSpan());
-                if (build != AnimationError.None)
-                    return;
-                for (var b = 0; b < boneCount; b++)
-                {
-                    var joint = palette[b];
-                    Staging[offset + b] = new float4x4(
-                        new float4(Conversions.ToUnity(joint.C0), 0f), new float4(Conversions.ToUnity(joint.C1), 0f),
-                        new float4(Conversions.ToUnity(joint.C2), 0f), new float4(Conversions.ToUnity(joint.C3), 1f));
-                }
-                Built[index] = 1;
+                return SkinPalette.Build(affineModel.AsReadOnlySpan(), paletteToRig, bindMatrices.AsReadOnlySpan(), ToAffine(blob.MeshFromRig), palette.AsSpan())
+                    == AnimationError.None;
             }
 
             static Affine ToAffine(in RigidPose pose)

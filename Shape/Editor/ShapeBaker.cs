@@ -20,6 +20,11 @@ namespace SA.Shape.Unity.Editor
                 Debug.LogError("SA: shape '" + authoring.name + "': no SharedFamilyAuthoring found. Fix: add it to the same GameObject or assign Family, then rebake.", authoring);
                 return;
             }
+            if (family.Bones == SharedBones.PoseOnly)
+            {
+                Debug.LogError("SA: shape '" + authoring.name + "': Bones is PoseOnly, but a shape moves bone entities. Fix: set Bones to Entities on SharedFamilyAuthoring, then rebake.", authoring);
+                return;
+            }
             if (authoring.transform != family.transform)
                 Debug.LogWarning("SA: shape '" + authoring.name + "' sits apart from its family. Fix: move it to the family GameObject, or the baked shape stays inert.", authoring);
             var rig = family.Rig != null ? family.Rig : GetComponent<RigAuthoring>();

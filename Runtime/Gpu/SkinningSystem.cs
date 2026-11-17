@@ -33,6 +33,8 @@ namespace SA
         public GraphicsBuffer SkinMatrixBuffer => pipeline?.SkinMatrices.Buffer;
         internal GpuRegistry Registry => pipeline?.Registry;
 
+        internal int CpuPoseCount { get; private set; }
+
         protected override void OnCreate()
         {
             rigs = GetEntityQuery(ComponentType.ReadOnly<Rig>(), ComponentType.ReadOnly<ClipState>(), ComponentType.ReadOnly<ClipAsset>(), ComponentType.ReadOnly<MaskAsset>(), ComponentType.ReadWrite<PoseSlot>(), ComponentType.ReadOnly<LocalToWorld>());
@@ -83,6 +85,8 @@ namespace SA
                     Clips = GetBufferTypeHandle<ClipAsset>(true),
                     Masks = GetBufferTypeHandle<MaskAsset>(true),
                     Cpu = GetComponentTypeHandle<CpuEngine>(true),
+                    Timelines = GetComponentTypeHandle<SharedTimeline>(true),
+                    BoneEntities = GetBufferTypeHandle<BoneEntity>(true),
                     Counts = rigCounts
                 }.ScheduleParallel(rigs, Dependency);
                 counted = new SkinCountJob { Skins = GetComponentTypeHandle<Skin>(true), Counts = skinCounts }.ScheduleParallel(skins, counted);
@@ -92,6 +96,7 @@ namespace SA
             var instances = new NativeArray<GpuInstance>(totals[0], Allocator.TempJob);
             var motions = new NativeArray<GpuMotion>(totals[2], Allocator.TempJob);
             var cpuPoses = new NativeArray<float4x4>(totals[3], Allocator.TempJob);
+            CpuPoseCount = totals[3];
             var skinJobs = new NativeArray<GpuSkinJob>(totals[4], Allocator.TempJob);
             using (FillMarker.Auto())
             {
@@ -103,6 +108,7 @@ namespace SA
                     Masks = GetBufferTypeHandle<MaskAsset>(true),
                     Cpu = GetComponentTypeHandle<CpuEngine>(true),
                     Worlds = GetComponentTypeHandle<LocalToWorld>(true),
+                    Timelines = GetComponentTypeHandle<SharedTimeline>(true),
                     BoneEntities = GetBufferTypeHandle<BoneEntity>(true),
                     Slots = GetComponentTypeHandle<PoseSlot>(),
                     BoneWorlds = GetComponentLookup<LocalToWorld>(true),
@@ -121,6 +127,8 @@ namespace SA
                     Bindings = GetComponentTypeHandle<SkinBinding>(),
                     Slots = GetComponentLookup<PoseSlot>(true),
                     Shaped = GetComponentLookup<ShapeDriven>(true),
+                    Timelines = GetComponentLookup<SharedTimeline>(true),
+                    BoneEntities = GetBufferLookup<BoneEntity>(true),
                     Records = pipeline.Registry.Skins,
                     Bases = skinCounts,
                     Jobs = skinJobs
@@ -174,6 +182,8 @@ namespace SA
             [ReadOnly] public BufferTypeHandle<ClipAsset> Clips;
             [ReadOnly] public BufferTypeHandle<MaskAsset> Masks;
             [ReadOnly] public ComponentTypeHandle<CpuEngine> Cpu;
+            [ReadOnly] public ComponentTypeHandle<SharedTimeline> Timelines;
+            [ReadOnly] public BufferTypeHandle<BoneEntity> BoneEntities;
             [NativeDisableParallelForRestriction] public NativeArray<int4> Counts;
 
             public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
@@ -182,6 +192,7 @@ namespace SA
                 var states = chunk.GetBufferAccessor(ref States);
                 var clips = chunk.GetBufferAccessor(ref Clips);
                 var masks = chunk.GetBufferAccessor(ref Masks);
+                var poseOnly = chunk.Has(ref Timelines) && !chunk.Has(ref BoneEntities);
                 var counts = int4.zero;
                 for (var i = 0; i < chunk.Count; i++)
                 {
@@ -191,7 +202,8 @@ namespace SA
                     ref var rig = ref reference.Value;
                     if (OnCpu(chunk, ref Cpu, i))
                     {
-                        counts.w += rig.Bones.Length;
+                        if (!poseOnly)
+                            counts.w += rig.Bones.Length;
                         continue;
                     }
                     counts.x += 1;
@@ -266,6 +278,7 @@ namespace SA
             [ReadOnly] public BufferTypeHandle<MaskAsset> Masks;
             [ReadOnly] public ComponentTypeHandle<CpuEngine> Cpu;
             [ReadOnly] public ComponentTypeHandle<LocalToWorld> Worlds;
+            [ReadOnly] public ComponentTypeHandle<SharedTimeline> Timelines;
             [ReadOnly] public BufferTypeHandle<BoneEntity> BoneEntities;
             public ComponentTypeHandle<PoseSlot> Slots;
             [ReadOnly] public ComponentLookup<LocalToWorld> BoneWorlds;
@@ -288,6 +301,7 @@ namespace SA
                 var slots = chunk.GetNativeArray(ref Slots);
                 var hasBones = chunk.Has(ref BoneEntities);
                 var boneEntities = hasBones ? chunk.GetBufferAccessor(ref BoneEntities) : default;
+                var poseOnly = !hasBones && chunk.Has(ref Timelines);
                 var at = Bases[unfilteredChunkIndex];
                 for (var i = 0; i < chunk.Count; i++)
                 {
@@ -297,7 +311,9 @@ namespace SA
                     {
                         ref var rig = ref reference.Value;
                         var boneCount = rig.Bones.Length;
-                        if (OnCpu(chunk, ref Cpu, i))
+                        if (OnCpu(chunk, ref Cpu, i) && poseOnly)
+                            slot = GpuPoseCount + at.w;
+                        else if (OnCpu(chunk, ref Cpu, i))
                         {
                             slot = GpuPoseCount + at.w;
                             var rigFromWorld = math.inverse(worlds[i].Value);
@@ -346,6 +362,8 @@ namespace SA
             public ComponentTypeHandle<SkinBinding> Bindings;
             [ReadOnly] public ComponentLookup<PoseSlot> Slots;
             [ReadOnly] public ComponentLookup<ShapeDriven> Shaped;
+            [ReadOnly] public ComponentLookup<SharedTimeline> Timelines;
+            [ReadOnly] public BufferLookup<BoneEntity> BoneEntities;
             [ReadOnly] public NativeHashMap<Hash128, int2> Records;
             [ReadOnly] public NativeArray<int2> Bases;
             [NativeDisableParallelForRestriction] public NativeArray<GpuSkinJob> Jobs;
@@ -369,7 +387,7 @@ namespace SA
                         {
                             job = new GpuSkinJob { Skin = (uint)record.x, PoseBase = (uint)slot.Base, OutputBase = (uint)at.y };
                             binding = new SkinBinding { MatrixBase = (uint)at.y, InfluenceBase = (uint)record.y };
-                            if (Shaped.HasComponent(skin.Rig))
+                            if (Shaped.HasComponent(skin.Rig) || Timelines.HasComponent(skin.Rig) && !BoneEntities.HasBuffer(skin.Rig))
                                 job.Skin = GpuFrame.NoSkin;
                         }
                         at.y += blob.Bones.Length;

@@ -49,6 +49,8 @@ namespace SA.Editor
             var features = authoring.GetComponents<ICpuPoseFeature>();
             foreach (var feature in features)
                 DependsOn((UnityEngine.Object)feature);
+            var family = GetComponent<SharedFamilyAuthoring>();
+            var poseOnly = family != null && family.Bones == SharedBones.PoseOnly;
             var errors = new List<string>();
             var clips = new List<AnimationClip>();
             foreach (var clip in AnimationDiscovery.Clips(authoring))
@@ -117,6 +119,21 @@ namespace SA.Editor
                             errors.Add($"renderer '{renderer.name}' sits under bone '{t.name}'. GPU rigs cannot carry rigid attachments; use Engine.Cpu or skin it.");
                             break;
                         }
+            if (poseOnly)
+            {
+                const string fix = " Set Bones to Entities on SharedFamilyAuthoring";
+                if (authoring.FootIK)
+                    errors.Add("Bones is PoseOnly, but planting feet on the ground moves bone entities." + fix + ", or turn foot planting off.");
+                foreach (var feature in features)
+                    errors.Add($"Bones is PoseOnly, but '{feature.GetType().Name}' moves bone entities." + fix + ", or remove that component.");
+                foreach (var renderer in GetComponentsInChildren<Renderer>())
+                    for (var t = renderer.transform; t != null && t != root; t = t.parent)
+                        if (skeletonSet.Contains(t))
+                        {
+                            errors.Add($"Bones is PoseOnly, but renderer '{renderer.name}' sits under bone '{t.name}' and needs that bone entity to carry it." + fix + ", or skin the renderer.");
+                            break;
+                        }
+            }
 
             if (errors.Count > 0)
             {
@@ -195,10 +212,11 @@ namespace SA.Editor
 
             var boneEntities = new NativeArray<Entity>(skeleton.Count, Allocator.Temp);
             for (var b = 0; b < skeleton.Count; b++)
-                boneEntities[b] = GetEntity(skeleton[b], cpu ? TransformUsageFlags.Dynamic : TransformUsageFlags.None);
+                boneEntities[b] = GetEntity(skeleton[b], cpu && !poseOnly ? TransformUsageFlags.Dynamic : TransformUsageFlags.None);
             if (cpu)
-            {
                 AddComponent<CpuEngine>(entity);
+            if (cpu && !poseOnly)
+            {
                 var bones = AddBuffer<BoneEntity>(entity);
                 foreach (var bone in boneEntities)
                     bones.Add(new BoneEntity { Value = bone });
@@ -243,12 +261,12 @@ namespace SA.Editor
             var commands = new EntityCommandBuffer(Allocator.Temp);
             foreach (var (bones, entity) in SystemAPI.Query<DynamicBuffer<BakedBone>>().WithEntityAccess().WithOptions(EntityQueryOptions.IncludePrefab | EntityQueryOptions.IncludeDisabledEntities))
             {
-                var cpu = EntityManager.HasComponent<CpuEngine>(entity);
+                var kept = EntityManager.HasComponent<CpuEngine>(entity) && EntityManager.HasBuffer<BoneEntity>(entity);
                 foreach (var bone in bones)
                 {
                     if (!EntityManager.Exists(bone.Value))
                         continue;
-                    if (cpu)
+                    if (kept)
                         commands.AddComponent<PoseDriven>(bone.Value);
                     else
                         commands.AddComponent<BakingOnlyEntity>(bone.Value);

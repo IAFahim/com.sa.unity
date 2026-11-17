@@ -10,6 +10,12 @@ namespace SA
         PerBone = 1
     }
 
+    public enum SharedBones : byte
+    {
+        Entities = 0,
+        PoseOnly = 1
+    }
+
     public struct SharedTimeline : IComponentData { }
     public struct ShapeDriven : IComponentData
     {

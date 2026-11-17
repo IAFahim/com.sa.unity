@@ -17,8 +17,8 @@ namespace SA.Tests
     public class SharedFamilyJobTests
     {
         const int Canonical = 56;
-        const int Steps = 36;
-        const string TraceName = "SharedFamilyTrace.bytes";
+        internal const int Steps = 36;
+        internal const string TraceName = "SharedFamilyTrace.bytes";
 
         internal sealed class Stage : IDisposable
         {
@@ -128,7 +128,7 @@ namespace SA.Tests
             return Table(stage, parents, calibration, sourceMap, 1.25f);
         }
 
-        internal static Entity Rig(Stage stage, int[] parents, BlobAssetReference<SharedRetargetData> table, BlobAssetReference<SharedClipData>[] clips, float[] weights, float offset)
+        internal static Entity Rig(Stage stage, int[] parents, BlobAssetReference<SharedRetargetData> table, BlobAssetReference<SharedClipData>[] clips, float[] weights, float offset, bool entities = true, BonePose[] rest = null)
         {
             var manager = stage.World.EntityManager;
             var builder = new BlobBuilder(Allocator.Temp);
@@ -136,7 +136,7 @@ namespace SA.Tests
             rig.Id = new Hash128((uint)parents.Length, 7, 7, 7);
             var bones = builder.Allocate(ref rig.Bones, parents.Length);
             for (var i = 0; i < parents.Length; i++)
-                bones[i] = new Bone { Parent = parents[i], Rest = BonePose.Identity, NameHash = (uint)(100 + i) };
+                bones[i] = new Bone { Parent = parents[i], Rest = rest != null ? rest[i] : BonePose.Identity, NameHash = (uint)(100 + i) };
             var skeleton = builder.CreateBlobAssetReference<RigBlob>(Allocator.Persistent);
             builder.Dispose();
             stage.Skeletons.Add(skeleton);
@@ -151,8 +151,9 @@ namespace SA.Tests
             var contributions = manager.AddBuffer<SharedContribution>(entity);
             for (var i = 0; i < clips.Length; i++)
                 contributions.Add(new SharedContribution { Clip = i, Weight = weights[i], Layer = 0, Mask = ushort.MaxValue, Speed = 1f, Offset = offset, Sample = offset });
-            manager.AddBuffer<BoneEntity>(entity);
-            for (var i = 0; i < parents.Length; i++)
+            if (entities)
+                manager.AddBuffer<BoneEntity>(entity);
+            for (var i = 0; entities && i < parents.Length; i++)
             {
                 var bone = manager.CreateEntity(typeof(LocalTransform));
                 manager.SetComponentData(bone, LocalTransform.FromPositionRotationScale(float3.zero, quaternion.identity, 1f));
@@ -169,7 +170,7 @@ namespace SA.Tests
             return stage;
         }
 
-        internal static Stage Populate()
+        internal static Stage Populate(bool entities = true)
         {
             var stage = new Stage { World = new World("SA.SharedFamilyJob") };
             var reference = SharedFamilyBake.CanonicalReferencePoses();
@@ -178,9 +179,9 @@ namespace SA.Tests
             var first = Clip(stage, reference, 33, 1.0, 0.4f, 0.0);
             var second = Clip(stage, reference, 41, 2.0, -0.3f, 0.7);
             var third = Clip(stage, reference, 19, 0.75, 0.25f, 1.9);
-            Rig(stage, SmallParents(), SmallTable(stage, reference), new[] { first, second }, new[] { 1f, 0f }, 0f);
-            Rig(stage, parents, FullTable(stage, reference, parents), new[] { first, second }, new[] { 1f, 0f }, 0f);
-            Rig(stage, SmallParents(), SmallTable(stage, reference), new[] { first, second, third }, new[] { 0.6f, 0.4f, 0f }, 0f);
+            Rig(stage, SmallParents(), SmallTable(stage, reference), new[] { first, second }, new[] { 1f, 0f }, 0f, entities);
+            Rig(stage, parents, FullTable(stage, reference, parents), new[] { first, second }, new[] { 1f, 0f }, 0f, entities);
+            Rig(stage, SmallParents(), SmallTable(stage, reference), new[] { first, second, third }, new[] { 0.6f, 0.4f, 0f }, 0f, entities);
             return stage;
         }
 
@@ -195,7 +196,7 @@ namespace SA.Tests
             contributions[1] = second;
         }
 
-        static void Act(Stage stage, int step)
+        internal static void Act(Stage stage, int step)
         {
             var manager = stage.World.EntityManager;
             if (step == 10)
@@ -226,7 +227,7 @@ namespace SA.Tests
             }
         }
 
-        static float Seconds(int step)
+        internal static float Seconds(int step)
         {
             if (step < 2 || step == 22 || step == 23)
                 return 0f;

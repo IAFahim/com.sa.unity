@@ -16,8 +16,8 @@ namespace SA.Tests
     public class SharedFamilyPaletteTests
     {
         const int Canonical = 56;
-        const int Steps = 14;
-        const string TraceName = "SharedFamilyPalette.bytes";
+        internal const int Steps = 14;
+        internal const string TraceName = "SharedFamilyPalette.bytes";
 
         internal sealed class Skinned : IDisposable
         {
@@ -43,7 +43,7 @@ namespace SA.Tests
             }
         }
 
-        static BlobAssetReference<SkinBlob> Blob(uint id, int rigBones, int paletteBones)
+        internal static BlobAssetReference<SkinBlob> Blob(uint id, int rigBones, int paletteBones)
         {
             var builder = new BlobBuilder(Allocator.Temp);
             ref var skin = ref builder.ConstructRoot<SkinBlob>();
@@ -62,7 +62,7 @@ namespace SA.Tests
             return result;
         }
 
-        static Entity Skin(Skinned scene, Entity rig, BlobAssetReference<SkinBlob> blob)
+        internal static Entity Skin(Skinned scene, Entity rig, BlobAssetReference<SkinBlob> blob)
         {
             var manager = scene.Stage.World.EntityManager;
             if (!manager.HasComponent<PoseSlot>(rig))
@@ -80,9 +80,9 @@ namespace SA.Tests
             return entity;
         }
 
-        static Skinned Scene()
+        internal static Skinned Scene(bool small = true, bool full = true)
         {
-            var scene = Populate();
+            var scene = Populate(small, full);
             var stage = scene.Stage;
             stage.System = stage.World.GetOrCreateSystemManaged<SharedFamilySystem>();
             scene.Skinning = stage.World.GetOrCreateSystemManaged<SkinningSystem>();
@@ -90,7 +90,7 @@ namespace SA.Tests
             return scene;
         }
 
-        internal static Skinned Populate()
+        internal static Skinned Populate(bool small = true, bool full = true)
         {
             var scene = new Skinned { Stage = new SharedFamilyJobTests.Stage { World = new World("SA.SharedFamilyPalette") } };
             var stage = scene.Stage;
@@ -98,18 +98,18 @@ namespace SA.Tests
             var parents = SharedFamilyBake.CanonicalParentsArray();
             var first = SharedFamilyJobTests.Clip(stage, reference, 33, 1.0, 0.4f, 0.0);
             var second = SharedFamilyJobTests.Clip(stage, reference, 41, 2.0, -0.3f, 0.7);
-            var small = SharedFamilyJobTests.Rig(stage, SharedFamilyJobTests.SmallParents(), SharedFamilyJobTests.SmallTable(stage, reference), new[] { first, second }, new[] { 1f, 0f }, 0f);
-            var full = SharedFamilyJobTests.Rig(stage, parents, SharedFamilyJobTests.FullTable(stage, reference, parents), new[] { first, second }, new[] { 1f, 0f }, 0f);
+            var smallRig = SharedFamilyJobTests.Rig(stage, SharedFamilyJobTests.SmallParents(), SharedFamilyJobTests.SmallTable(stage, reference), new[] { first, second }, new[] { 1f, 0f }, 0f, small);
+            var fullRig = SharedFamilyJobTests.Rig(stage, parents, SharedFamilyJobTests.FullTable(stage, reference, parents), new[] { first, second }, new[] { 1f, 0f }, 0f, full);
             scene.Blobs.Add(Blob(1, 7, 7));
             scene.Blobs.Add(Blob(2, Canonical, 50));
             scene.Blobs.Add(Blob(3, Canonical, 20));
-            Skin(scene, small, scene.Blobs[0]);
-            Skin(scene, full, scene.Blobs[1]);
-            Skin(scene, full, scene.Blobs[2]);
+            Skin(scene, smallRig, scene.Blobs[0]);
+            Skin(scene, fullRig, scene.Blobs[1]);
+            Skin(scene, fullRig, scene.Blobs[2]);
             return scene;
         }
 
-        static void Record(Skinned scene, List<float> trace)
+        internal static void Record(Skinned scene, List<float> trace)
         {
             var manager = scene.Stage.World.EntityManager;
             foreach (var entity in scene.Skins)
@@ -127,10 +127,10 @@ namespace SA.Tests
             }
         }
 
-        static float[] Play()
+        internal static float[] Play(bool small = true, bool full = true)
         {
             var trace = new List<float>();
-            using (var scene = Scene())
+            using (var scene = Scene(small, full))
             {
                 var manager = scene.Stage.World.EntityManager;
                 for (var step = 0; step < Steps; step++)

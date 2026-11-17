@@ -93,18 +93,24 @@ namespace SA.Tests
             return bones;
         }
 
-        static GameObject MixamoRig(out Dictionary<string, Transform> lookup)
+        internal static GameObject MixamoRig(out Dictionary<string, Transform> lookup, string name = "W1MixamoRig", bool armature = false)
         {
-            var root = new GameObject("W1MixamoRig");
+            var root = new GameObject(name);
             var body = new GameObject("Body");
             body.transform.SetParent(root.transform, false);
             body.transform.localScale = new Vector3(0.01f, 0.01f, 0.01f);
             lookup = new Dictionary<string, Transform>();
+            var top = root.transform;
+            if (armature)
+            {
+                top = new GameObject("Armature").transform;
+                top.SetParent(root.transform, false);
+            }
             var index = 0;
             foreach (var bone in MixamoBones())
             {
                 var go = new GameObject(Prefix + bone.Name);
-                go.transform.SetParent(bone.Parent == null ? root.transform : lookup[bone.Parent], false);
+                go.transform.SetParent(bone.Parent == null ? top : lookup[bone.Parent], false);
                 go.transform.position = bone.World;
                 go.transform.rotation = UnityEngine.Quaternion.Euler(37f * index % 90f - 45f, 53f * index % 120f - 60f, 71f * index % 80f - 40f);
                 lookup[bone.Name] = go.transform;
@@ -145,7 +151,7 @@ namespace SA.Tests
             return avatar;
         }
 
-        static AnimationClip SyntheticClip(Dictionary<string, Transform> lookup, Transform root)
+        internal static AnimationClip SyntheticClip(Dictionary<string, Transform> lookup, Transform root)
         {
             var clip = new AnimationClip { name = "W1Synthetic", frameRate = Hz };
             var roles = MixamoRoles();
