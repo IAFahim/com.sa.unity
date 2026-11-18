@@ -50,6 +50,11 @@ namespace SA
         public int BoneBase;
     }
 
+    internal struct PaletteRun
+    {
+        public uint Source, Target, Count;
+    }
+
     internal static class GpuFrame
     {
         public const uint NoSkin = uint.MaxValue;
@@ -221,6 +226,9 @@ namespace SA
         static readonly int SkinMatricesId = Shader.PropertyToID("_SkinMatrices");
         static readonly int InstanceCountId = Shader.PropertyToID("_InstanceCount");
         static readonly int SkinJobCountId = Shader.PropertyToID("_SkinJobCount");
+        static readonly int StagedId = Shader.PropertyToID("_Staged");
+        static readonly int RunsId = Shader.PropertyToID("_Runs");
+        static readonly int RunCountId = Shader.PropertyToID("_RunCount");
         static readonly int GlobalSkinMatricesId = Shader.PropertyToID("_SaSkinMatrices");
         static readonly int GlobalInfluencesId = Shader.PropertyToID("_SaInfluences");
 
@@ -234,11 +242,24 @@ namespace SA
         readonly ComputeShader shader = Resources.Load<ComputeShader>("SA/Animation");
         readonly int evaluateKernel;
         readonly int skinKernel;
+        readonly int scatterKernel;
 
         public GpuPipeline()
         {
             evaluateKernel = shader.FindKernel("EvaluatePose");
             skinKernel = shader.FindKernel("Skin");
+            scatterKernel = shader.FindKernel("Scatter");
+        }
+
+        public void Scatter(GraphicsBuffer staged, GraphicsBuffer runs, int runCount)
+        {
+            if (runCount <= 0)
+                return;
+            shader.SetBuffer(scatterKernel, StagedId, staged);
+            shader.SetBuffer(scatterKernel, RunsId, runs);
+            shader.SetBuffer(scatterKernel, SkinMatricesId, SkinMatrices.Buffer);
+            shader.SetInt(RunCountId, runCount);
+            shader.Dispatch(scatterKernel, (runCount + 63) / 64, 1, 1);
         }
 
         public void Execute(NativeArray<GpuInstance> instances, NativeArray<GpuMotion> motions, NativeArray<float4x4> cpuPoses, int gpuPoseCount, NativeArray<GpuSkinJob> skinJobs, int skinMatrixCount)

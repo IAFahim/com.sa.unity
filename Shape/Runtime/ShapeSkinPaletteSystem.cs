@@ -29,6 +29,12 @@ namespace SA.Shape.Unity
 
         internal int UploadCalls { get; private set; }
 
+        internal int DirectUploadLimit
+        {
+            get => staging.DirectLimit;
+            set => staging.DirectLimit = value;
+        }
+
         protected override void OnCreate()
         {
             skinQuery = GetEntityQuery(ComponentType.ReadOnly<Skin>(), ComponentType.ReadOnly<SkinBinding>());
@@ -89,7 +95,7 @@ namespace SA.Shape.Unity
                     ChunkBase = chunkBase
                 }.ScheduleParallel(skinQuery, Dependency);
                 built.Complete();
-                UploadCalls = staging.Upload(matrices);
+                UploadCalls = staging.Upload(skinning.Pipeline);
             }
             chunkBase.Dispose();
         }

@@ -1,5 +1,7 @@
 using System;
+using System.Collections;
 using System.Collections.Generic;
+using System.Diagnostics;
 using NUnit.Framework;
 using Unity.Collections;
 using Unity.Entities;
@@ -157,7 +159,9 @@ namespace SA.Tests
             return root;
         }
 
-        static World Load(string scenePath)
+        const double LoadSeconds = 600.0;
+
+        static World Load(string scenePath, out Entity sceneEntity)
         {
             var world = new World("SA.BakeProbe", WorldFlags.Game);
             var kept = new List<Type>();
@@ -169,10 +173,7 @@ namespace SA.Tests
             }
             DefaultWorldInitialization.AddSystemsToRootLevelSystemGroups(world, kept.ToArray());
             var guid = new Hash128(AssetDatabase.AssetPathToGUID(scenePath));
-            SceneSystem.LoadSceneAsync(world.Unmanaged, guid, new SceneSystem.LoadParameters { Flags = SceneLoadFlags.BlockOnImport | SceneLoadFlags.BlockOnStreamIn });
-            for (var i = 0; i < 4; i++)
-                world.Update();
-            world.EntityManager.CompleteAllTrackedJobs();
+            sceneEntity = SceneSystem.LoadSceneAsync(world.Unmanaged, guid, new SceneSystem.LoadParameters { Flags = SceneLoadFlags.BlockOnStreamIn });
             return world;
         }
 
@@ -223,8 +224,9 @@ namespace SA.Tests
             return matrices;
         }
 
-        [Test]
-        public void ACharacterBakedWithoutBoneEntitiesPlaysLikeOneBakedWithThem()
+        [UnityTest]
+        [Timeout(900000)]
+        public IEnumerator ACharacterBakedWithoutBoneEntitiesPlaysLikeOneBakedWithThem()
         {
             TestRigs.RequireGpu();
             LogAssert.ignoreFailingMessages = true;
@@ -243,8 +245,29 @@ namespace SA.Tests
             Assert.IsTrue(EditorSceneManager.SaveScene(scene, path), "the sub scene was not saved");
             Close(scene);
             AssetDatabase.Refresh();
-            var world = Load(path);
+            var world = Load(path, out var sceneEntity);
             try
+            {
+                var waited = Stopwatch.StartNew();
+                while (!SceneSystem.IsSceneLoaded(world.Unmanaged, sceneEntity))
+                {
+                    if (waited.Elapsed.TotalSeconds > LoadSeconds)
+                        Assert.Fail("the baked sub scene did not load within " + LoadSeconds + " s; the Editor's import of it stalled");
+                    world.Update();
+                    yield return null;
+                }
+                world.Update();
+                world.EntityManager.CompleteAllTrackedJobs();
+                Check(world);
+            }
+            finally
+            {
+                world.Dispose();
+            }
+        }
+
+        static void Check(World world)
+        {
             {
                 var manager = world.EntityManager;
                 var withBones = Find(manager, WithBones);
@@ -260,6 +283,7 @@ namespace SA.Tests
                 Assert.AreEqual(boneCount, manager.GetBuffer<BoneEntity>(withBones).Length);
                 Assert.IsFalse(manager.HasBuffer<BoneEntity>(poseOnly), "a PoseOnly rig must not carry bone entities");
                 Assert.IsTrue(manager.HasComponent<CpuEngine>(poseOnly) && manager.HasComponent<SharedTimeline>(poseOnly));
+                Assert.IsTrue(manager.HasComponent<SharedCulled>(poseOnly) && !SharedFamilyControl.IsCulled(manager, poseOnly), "a baked rig carries the culling switch, turned off");
                 using (var driven = manager.CreateEntityQuery(typeof(PoseDriven)))
                     Assert.AreEqual(boneCount, driven.CalculateEntityCount(), "only the character with bone entities may keep its bones");
                 var belowWithBones = Below(manager, withBones);
@@ -310,10 +334,6 @@ namespace SA.Tests
                 }
                 Assert.AreEqual(boneCount, skinning.CpuPoseCount, "only the character with bone entities sends bone matrices to the GPU");
                 TestContext.WriteLine("PoseOnlyBake bones " + boneCount + " moved " + moved.ToString("R", System.Globalization.CultureInfo.InvariantCulture));
-            }
-            finally
-            {
-                world.Dispose();
             }
         }
     }

@@ -39,6 +39,20 @@ namespace SA
         {
             clock.Paused = paused ? (byte)1 : (byte)0;
         }
+
+        public static void SetCulled(EntityManager manager, Entity rig, bool culled)
+        {
+            if (!manager.HasComponent<SharedCulled>(rig))
+            {
+                if (!culled)
+                    return;
+                manager.AddComponent<SharedCulled>(rig);
+            }
+            manager.SetComponentEnabled<SharedCulled>(rig, culled);
+        }
+
+        public static bool IsCulled(EntityManager manager, Entity rig) =>
+            manager.HasComponent<SharedCulled>(rig) && manager.IsComponentEnabled<SharedCulled>(rig);
     }
 
     [UpdateInGroup(typeof(AnimationSystemGroup))]
@@ -194,6 +208,23 @@ namespace SA
                 PostTransforms = SystemAPI.GetComponentLookup<PostTransformMatrix>(),
                 Faults = faults.AsParallelWriter()
             }.ScheduleParallel(Dependency);
+            Dependency = new CulledJob { DeltaTime = SystemAPI.Time.DeltaTime }.ScheduleParallel(Dependency);
+        }
+
+        static double WrapSample(double sample, double duration, bool loop)
+        {
+            if (!(duration > 0.0))
+                return 0.0;
+            if (loop)
+            {
+                sample %= duration;
+                if (sample < 0.0)
+                    sample += duration;
+                return sample;
+            }
+            if (sample < 0.0)
+                return 0.0;
+            return sample > duration ? duration : sample;
         }
 
         static void ReadLatest()
@@ -368,7 +399,7 @@ namespace SA
 
         [BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.High)]
         [WithAll(typeof(SharedTimeline))]
-        [WithNone(typeof(ShapeDriven))]
+        [WithNone(typeof(ShapeDriven), typeof(SharedCulled))]
         unsafe partial struct RigJob : IJobEntity
         {
             public float DeltaTime;
@@ -435,6 +466,11 @@ namespace SA
                 if (state.Table != table.Source)
                 {
                     state.Table = table.Source;
+                    state.Frame = default;
+                }
+                if (state.Resume != 0)
+                {
+                    state.Resume = 0;
                     state.Frame = default;
                 }
                 var hasBones = Bones.TryGetBuffer(entity, out var bones);
@@ -581,22 +617,6 @@ namespace SA
                 clockData = clock;
             }
 
-            static double WrapSample(double sample, double duration, bool loop)
-            {
-                if (!(duration > 0.0))
-                    return 0.0;
-                if (loop)
-                {
-                    sample %= duration;
-                    if (sample < 0.0)
-                        sample += duration;
-                    return sample;
-                }
-                if (sample < 0.0)
-                    return 0.0;
-                return sample > duration ? duration : sample;
-            }
-
             static void SortByLayer(Span<ClipContribution> contributions, Span<int> clipFor)
             {
                 for (var i = 1; i < contributions.Length; i++)
@@ -645,6 +665,55 @@ namespace SA
                 return true;
             }
         }
+
+        [BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.High)]
+        [WithAll(typeof(SharedTimeline), typeof(SharedCulled))]
+        [WithNone(typeof(ShapeDriven))]
+        partial struct CulledJob : IJobEntity
+        {
+            public float DeltaTime;
+
+            void Execute(in Rig rigReference, in SharedTableRef table, in DynamicBuffer<SharedClipAsset> clips, in DynamicBuffer<SharedClipLayoutRef> layouts,
+                ref DynamicBuffer<SharedContribution> contributions, ref SharedClock clockData, ref SharedPoseState state)
+            {
+                if (!rigReference.Value.IsCreated)
+                    return;
+                var boneCount = rigReference.Value.Value.Bones.Length;
+                if (boneCount <= 0 || boneCount > MaxRigBones)
+                    return;
+                var clock = clockData;
+                var advance = clock.Paused == 0 ? DeltaTime : 0f;
+                if (advance < 0f)
+                    advance = 0f;
+                if (advance > 0f)
+                {
+                    clock.Seconds += advance;
+                    clock.Tick++;
+                }
+                var seek = clock.Seek != 0;
+                clock.Seek = 0;
+                if (!table.Value.IsCreated)
+                    return;
+                var active = 0;
+                for (var i = 0; i < contributions.Length && active < SharedFamilyControl.MaxContributions; i++)
+                {
+                    var element = contributions[i];
+                    if (element.Weight <= 0f || element.Clip < 0 || element.Clip >= clips.Length || !clips[element.Clip].Value.IsCreated)
+                        continue;
+                    ref var blob = ref clips[element.Clip].Value.Value;
+                    if (blob.Bytes.Length == 0 || blob.BoneCount != CanonicalBones)
+                        continue;
+                    if (element.Clip >= layouts.Length || !layouts[element.Clip].Value.IsCreated)
+                        continue;
+                    var sample = seek ? clock.Seconds + element.Offset : element.Sample + advance * element.Speed;
+                    element.Sample = WrapSample(sample, blob.Duration, blob.Loop != 0);
+                    contributions[i] = element;
+                    active++;
+                }
+                state.Resume = 1;
+                clockData = clock;
+            }
+        }
     }
 
     [UpdateInGroup(typeof(PresentationSystemGroup))]
@@ -656,12 +725,19 @@ namespace SA
 
         PaletteStaging staging;
         EntityQuery skins;
+        UnityEngine.GraphicsBuffer written;
 
         internal int StagedMatrices { get; private set; }
 
         internal int StagingCapacity => staging != null && staging.Matrices.IsCreated ? staging.Matrices.Length : 0;
 
         internal int UploadCalls { get; private set; }
+
+        internal int DirectUploadLimit
+        {
+            get => staging.DirectLimit;
+            set => staging.DirectLimit = value;
+        }
 
         protected override void OnCreate()
         {
@@ -689,12 +765,16 @@ namespace SA
             if (count == 0)
                 return;
             staging.Begin(count);
+            var everything = skinning.LayoutChanged || !ReferenceEquals(written, matrices);
+            written = matrices;
             var rigs = SystemAPI.GetComponentLookup<Rig>(true);
             var bones = SystemAPI.GetBufferLookup<BoneEntity>(true);
             Dependency = new MeasureJob
             {
                 Timelines = SystemAPI.GetComponentLookup<SharedTimeline>(true),
                 Shaped = SystemAPI.GetComponentLookup<ShapeDriven>(true),
+                Culled = SystemAPI.GetComponentLookup<SharedCulled>(true),
+                Everything = everything,
                 Rigs = rigs,
                 Bones = bones,
                 Limit = matrices.count,
@@ -716,7 +796,7 @@ namespace SA
                 Staging = staging.Matrices
             }.ScheduleParallel(skins, Dependency);
             CompleteDependency();
-            UploadCalls = staging.Upload(matrices);
+            UploadCalls = staging.Upload(skinning.Pipeline);
         }
 
         [BurstCompile(CompileSynchronously = true, FloatMode = FloatMode.Strict, FloatPrecision = FloatPrecision.High)]
@@ -724,8 +804,10 @@ namespace SA
         {
             [ReadOnly] public ComponentLookup<SharedTimeline> Timelines;
             [ReadOnly] public ComponentLookup<ShapeDriven> Shaped;
+            [ReadOnly] public ComponentLookup<SharedCulled> Culled;
             [ReadOnly] public ComponentLookup<Rig> Rigs;
             [ReadOnly] public BufferLookup<BoneEntity> Bones;
+            public bool Everything;
             public int Limit;
             public NativeList<PaletteRange>.ParallelWriter Ranges;
 
@@ -734,6 +816,8 @@ namespace SA
                 if (!skin.Value.IsCreated || !Timelines.HasComponent(skin.Rig))
                     return;
                 if (Shaped.HasComponent(skin.Rig))
+                    return;
+                if (!Everything && Culled.HasComponent(skin.Rig) && Culled.IsComponentEnabled(skin.Rig))
                     return;
                 if (!Rigs.HasComponent(skin.Rig))
                     return;

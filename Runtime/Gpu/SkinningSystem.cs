@@ -33,7 +33,11 @@ namespace SA
         public GraphicsBuffer SkinMatrixBuffer => pipeline?.SkinMatrices.Buffer;
         internal GpuRegistry Registry => pipeline?.Registry;
 
+        internal GpuPipeline Pipeline => pipeline;
+
         internal int CpuPoseCount { get; private set; }
+
+        internal bool LayoutChanged { get; private set; }
 
         protected override void OnCreate()
         {
@@ -98,6 +102,7 @@ namespace SA
             var cpuPoses = new NativeArray<float4x4>(totals[3], Allocator.TempJob);
             CpuPoseCount = totals[3];
             var skinJobs = new NativeArray<GpuSkinJob>(totals[4], Allocator.TempJob);
+            var moved = new NativeArray<byte>(skinCounts.Length, Allocator.TempJob);
             using (FillMarker.Auto())
             {
                 var filled = new RigFillJob
@@ -131,10 +136,15 @@ namespace SA
                     BoneEntities = GetBufferLookup<BoneEntity>(true),
                     Records = pipeline.Registry.Skins,
                     Bases = skinCounts,
+                    Moved = moved,
                     Jobs = skinJobs
                 }.ScheduleParallel(skins, filled);
                 filled.Complete();
             }
+            LayoutChanged = false;
+            for (var i = 0; i < moved.Length; i++)
+                LayoutChanged |= moved[i] != 0;
+            moved.Dispose();
 
             using (UploadMarker.Auto())
                 pipeline.Execute(instances, motions, cpuPoses, totals[1], skinJobs, totals[5]);
@@ -366,6 +376,7 @@ namespace SA
             [ReadOnly] public BufferLookup<BoneEntity> BoneEntities;
             [ReadOnly] public NativeHashMap<Hash128, int2> Records;
             [ReadOnly] public NativeArray<int2> Bases;
+            [NativeDisableParallelForRestriction] public NativeArray<byte> Moved;
             [NativeDisableParallelForRestriction] public NativeArray<GpuSkinJob> Jobs;
 
             public void Execute(in ArchetypeChunk chunk, int unfilteredChunkIndex, bool useEnabledMask, in v128 chunkEnabledMask)
@@ -396,8 +407,10 @@ namespace SA
                     next[i] = binding;
                     changed |= current[i].MatrixBase != binding.MatrixBase || current[i].InfluenceBase != binding.InfluenceBase;
                 }
-                if (changed)
-                    chunk.GetNativeArray(ref Bindings).CopyFrom(next);
+                if (!changed)
+                    return;
+                Moved[unfilteredChunkIndex] = 1;
+                chunk.GetNativeArray(ref Bindings).CopyFrom(next);
             }
         }
     }

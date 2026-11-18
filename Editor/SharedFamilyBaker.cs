@@ -713,6 +713,8 @@ namespace SA.Editor
             AddComponent<SharedTimeline>(entity);
             AddComponent(entity, new SharedRig { NameHash = RigBuilder.Hash(authoring.name) });
             AddComponent(entity, new SharedRetarget { Value = table });
+            AddComponent<SharedCulled>(entity);
+            SetComponentEnabled<SharedCulled>(entity, false);
             AddComponent(entity, new SharedClock
             {
                 Seconds = 0.0,

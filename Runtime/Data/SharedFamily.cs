@@ -17,6 +17,8 @@ namespace SA
     }
 
     public struct SharedTimeline : IComponentData { }
+
+    public struct SharedCulled : IComponentData, IEnableableComponent { }
     public struct ShapeDriven : IComponentData
     {
     }
@@ -116,6 +118,7 @@ namespace SA
         public FrameAction Action;
         public AnimationError Smooth;
         public byte Native;
+        public byte Resume;
     }
 
     [InternalBufferCapacity(0)]

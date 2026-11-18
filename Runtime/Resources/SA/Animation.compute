@@ -1,5 +1,6 @@
 #pragma kernel EvaluatePose
 #pragma kernel Skin
+#pragma kernel Scatter
 
 #include "Packages/com.sa.unity/Runtime/Shaders/Pose.hlsl"
 
@@ -9,6 +10,7 @@ struct GpuMotion { uint SampleBase; uint FrameCount; uint Layer; uint Mode; uint
 struct GpuSkin { uint SkinBoneBase; uint SkinBoneCount; Affine MeshFromRig; };
 struct GpuSkinBone { uint Bone; Affine Bindpose; };
 struct GpuSkinJob { uint Skin; uint PoseBase; uint OutputBase; };
+struct PaletteRun { uint Source; uint Target; uint Count; };
 
 StructuredBuffer<GpuBone> _Bones;
 StructuredBuffer<BonePose> _Samples;
@@ -18,10 +20,13 @@ StructuredBuffer<GpuMotion> _Motions;
 StructuredBuffer<GpuSkin> _Skins;
 StructuredBuffer<GpuSkinBone> _SkinBones;
 StructuredBuffer<GpuSkinJob> _SkinJobs;
+StructuredBuffer<Affine> _Staged;
+StructuredBuffer<PaletteRun> _Runs;
 RWStructuredBuffer<Affine> _Poses;
 RWStructuredBuffer<Affine> _SkinMatrices;
 uint _InstanceCount;
 uint _SkinJobCount;
+uint _RunCount;
 
 BonePose SampleMotion(GpuMotion motion, uint boneCount, uint bone)
 {
@@ -124,4 +129,14 @@ void Skin(uint3 id : SV_DispatchThreadID)
         GpuSkinBone skinBone = _SkinBones[skin.SkinBoneBase + k];
         _SkinMatrices[job.OutputBase + k] = MulAffine(MulAffine(skin.MeshFromRig, _Poses[job.PoseBase + skinBone.Bone]), skinBone.Bindpose);
     }
+}
+
+[numthreads(64, 1, 1)]
+void Scatter(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= _RunCount)
+        return;
+    PaletteRun run = _Runs[id.x];
+    for (uint k = 0; k < run.Count; k++)
+        _SkinMatrices[run.Target + k] = _Staged[run.Source + k];
 }

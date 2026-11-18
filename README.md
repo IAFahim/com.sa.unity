@@ -76,6 +76,22 @@ Engines
 
 Both engines skin through the same vertex function.
 
+Shared-family rigs: bone entities, culling
+------------------------------------------
+
+A rig with `SharedFamilyAuthoring` is evaluated on the CPU by `SharedFamilySystem` and skinned by `SharedFamilyPaletteSystem`. Its **Bones** setting decides whether its bones are entities:
+
+| | `SharedBones.Entities` (default) | `SharedBones.PoseOnly` |
+|-|----------------------------------|------------------------|
+| bone entities | one per bone | none |
+| pose kept on | each bone's `LocalTransform` and the rig | the rig only |
+| skin matrices built from | bone `LocalTransform` | the pose kept on the rig |
+| IK, foot planting, shapes, ragdolls, a renderer under a bone | yes | refused when baking, with the fix in the message |
+
+Use `PoseOnly` for crowds. A 56-bone character has 56 fewer entities, the transform systems have nothing to do for it, and the skinning system sends no bone matrices to the GPU for it. The poses and skin matrices are bit for bit the same in both modes. Read the evaluated pose of either kind with `SharedFamilyPose.TryCopyLocal` (bone-local) or `SharedFamilyPose.TryCopyModel` (rig space); both return false until the rig has played once.
+
+Cull a rig that nobody sees with `SharedFamilyControl.SetCulled(manager, rig, true)`, or enable the baked `SharedCulled` component from your own visibility job. A culled rig keeps its clock and clip times running and stops evaluating its pose and rebuilding its skin, which keeps its last matrices. When it is shown again it starts fresh at the current clip times, with no blend from the pose it was held in. SA does no visibility test of its own: the game knows its cameras, so the game decides.
+
 Transitions without transition clips
 ------------------------------------
 
@@ -94,6 +110,6 @@ Limits
 
 The optional `com.sa.unity.ik` package supplies head look-at and two-bone target constraints. Reactions adds ground-aware foot planting and hit-flinch playback on a separate upper-body layer.
 
-No extracted gameplay root motion, animation events, blend shapes, generic cross-skeleton retargeting, attachments to GPU rigs or animation culling. In-place baking removes horizontal travel while preserving vertical movement; it does not move the gameplay entity.
+No extracted gameplay root motion, animation events, blend shapes, cross-skeleton retargeting for rig clips (shared-family clips do it), attachments to GPU or `PoseOnly` rigs, or culling of rig-clip characters (shared-family rigs can be culled, see above). In-place baking removes horizontal travel while preserving vertical movement; it does not move the gameplay entity.
 Meshes need `baseVertex` 0 and at most 4 influences per vertex are kept.
 GPU rigs are one compute thread per character; see `Documentation~/benchmark.md` for measured cost.

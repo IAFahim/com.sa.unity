@@ -18,7 +18,12 @@ namespace SA
         public NativeArray<int> Offsets;
         public NativeArray<byte> Built;
         public NativeList<PaletteRange> Ranges;
+        public int DirectLimit = 8;
+        NativeList<PaletteRun> runs;
+        GpuArray<float4x4> staged;
+        GpuArray<PaletteRun> stagedRuns;
         int skins;
+        int total;
 
         struct StartOrder : IComparer<PaletteRange>
         {
@@ -28,6 +33,7 @@ namespace SA
         public PaletteStaging()
         {
             Ranges = new NativeList<PaletteRange>(64, Allocator.Persistent);
+            runs = new NativeList<PaletteRun>(64, Allocator.Persistent);
         }
 
         public void Dispose()
@@ -40,6 +46,10 @@ namespace SA
                 Built.Dispose();
             if (Ranges.IsCreated)
                 Ranges.Dispose();
+            if (runs.IsCreated)
+                runs.Dispose();
+            staged?.Dispose();
+            stagedRuns?.Dispose();
         }
 
         public void Begin(int skinCount)
@@ -67,7 +77,7 @@ namespace SA
                 Built[i] = 0;
             }
             Ranges.Sort(new StartOrder());
-            var total = 0;
+            total = 0;
             for (var i = 0; i < Ranges.Length; i++)
             {
                 var range = Ranges[i];
@@ -84,7 +94,40 @@ namespace SA
             return total;
         }
 
-        public int Upload(UnityEngine.GraphicsBuffer target)
+        public int Upload(GpuPipeline pipeline)
+        {
+            var needed = 0;
+            var end = -1;
+            runs.Clear();
+            for (var i = 0; i < Ranges.Length; i++)
+            {
+                var range = Ranges[i];
+                if (Built[range.Index] == 0)
+                {
+                    end = -1;
+                    continue;
+                }
+                if (range.Start != end)
+                    needed++;
+                end = range.Start + range.Count;
+                runs.Add(new PaletteRun { Source = (uint)Offsets[range.Index], Target = (uint)range.Start, Count = (uint)range.Count });
+            }
+            if (needed <= DirectLimit)
+                return Direct(pipeline.SkinMatrices.Buffer);
+            if (staged == null)
+            {
+                staged = new GpuArray<float4x4>();
+                stagedRuns = new GpuArray<PaletteRun>();
+            }
+            staged.Reserve(total);
+            stagedRuns.Reserve(runs.Length);
+            staged.Buffer.SetData(Matrices, 0, 0, total);
+            stagedRuns.Buffer.SetData(runs.AsArray(), 0, 0, runs.Length);
+            pipeline.Scatter(staged.Buffer, stagedRuns.Buffer, runs.Length);
+            return 2;
+        }
+
+        int Direct(UnityEngine.GraphicsBuffer target)
         {
             var calls = 0;
             var source = 0;
